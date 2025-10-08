@@ -1,0 +1,36 @@
+# Python
+__pycache__/
+*.pyc
+
+# Jupyter
+.ipynb_checkpoints/
+*.ipynb_export/
+*.ipynb_cache/
+
+# Logs & runs
+*.log
+.wandb/
+lightning_logs/
+runs/
+
+# Data (adjust to your layout!)
+data/
+*.csv
+*.csv.gz
+*.parquet
+*.npz
+*.npy
+
+# OS clutter
+.DS_Store__pycache__/
+*.pyc
+.ipynb_checkpoints/
+.wandb/
+data/
+*.csv
+*.csv.gz
+*.parquet
+*.npz
+*.npy
+*.log
+.DS_Store
