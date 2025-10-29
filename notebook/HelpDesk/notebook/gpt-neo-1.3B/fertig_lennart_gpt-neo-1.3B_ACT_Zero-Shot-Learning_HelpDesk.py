@@ -12,6 +12,16 @@ os.environ["MPLBACKEND"] = "Agg"
 os.environ["TRANSFORMERS_NO_TORCHVISION"] = "1"
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
+# Preload libstdc++ on some HPC stacks (no-op if not needed)
+prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
+cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
+if cands:
+    try:
+        mode = getattr(os, "RTLD_GLOBAL", 0)
+        ctypes.CDLL(cands[0], mode=mode)
+    except OSError:
+        pass
+
 import numpy as np
 import pandas as pd
 import torch
@@ -308,43 +318,43 @@ wandb.config.update({
     "final_temperature": ZS_CFG["temperature"],
     "final_prior_alpha": ZS_CFG["prior_alpha"],
 }, allow_val_change=True)
-
+    
 # %% Per-k evaluation
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
 for k in sorted(test_df["k"].astype(int).unique()):
-    subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
-    y_true = subset["next_activity"].tolist()
-    y_pred = [predict_topk(p, k=1)[0] for p in subset["prefix"]]
-    acc = accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
-    k_vals.append(k); counts.append(len(subset))
-    accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
+    test_data_subset = test_df[test_df["k"] == k]
+    if len(test_data_subset) > 0:
+        y_true = test_data_subset["next_activity"].tolist()
+        y_pred = [predict_topk(p, k=1)[0] for p in test_data_subset["prefix"]]
+        acc = accuracy_score(y_true, y_pred)
+        prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(k); counts.append(len(test_data_subset))
+        accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
 
-avg_acc = float(np.mean(accuracies)) if accuracies else float("nan")
+avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
 avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_p   = float(np.mean(precisions)) if precisions else float("nan")
-avg_r   = float(np.mean(recalls))    if recalls    else float("nan")
+avg_precision   = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall   = float(np.mean(recalls))    if recalls    else float("nan")
 
-print(f"Average accuracy across all prefixes:  {avg_acc:.4f}")
+print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
-print(f"Average precision across all prefixes: {avg_p:.4f}")
-print(f"Average recall across all prefixes:    {avg_r:.4f}")
+print(f"Average precision across all prefixes: {avg_precision:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}") 
 
-wandb.log({
-    "curves/k": k_vals,
-    "curves/counts": counts,
-    "curves/accuracy": accuracies,
-    "curves/f1": fscores,
-    "curves/precision": precisions,
-    "curves/recall": recalls,
-    "metrics/avg_accuracy": avg_acc,
-    "metrics/avg_f1": avg_f1,
-    "metrics/avg_precision": avg_p,
-    "metrics/avg_recall": avg_r,
-})
+# Micro (global) accuracy over all val prefixes
+# Total correct / total samples across the entire val set
+y_true_all = val_df["next_activity"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in val_df["prefix"]]
+micro_acc  = accuracy_score(y_true_all, y_pred_all)
+print(f"[Val] Micro (global) accuracy: {micro_acc:.4f}")
+
+# Micro (global) accuracy over all test prefixes
+# Total correct / total samples across the entire test set
+y_true_all = test_df["next_activity"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in test_df["prefix"]]
+micro_acc  = accuracy_score(y_true_all, y_pred_all)
+print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
 
 # %% Top-k accuracy on the whole test set 
 def topk_accuracy(y_true, topk_labels_list, k=3):
@@ -362,6 +372,7 @@ wandb.log({
 plot_dir = RUN_CFG["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
+# Acc/F1 vs k
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
@@ -379,24 +390,80 @@ if len(k_vals):
 
 print(f"Saved plots to: {plot_dir}")
 
-# %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
-table = wandb.Table(columns=["k","prefix","gold","pred","p_pred","top3","top3_p"])
+# %% Log per-k curves + macro averages
+wandb.log({
+    "curves/k": k_vals,
+    "curves/counts": counts,
+    "curves/accuracy": accuracies,
+    "curves/f1": fscores,
+    "curves/precision": precisions,
+    "curves/recall": recalls,
+    "metrics/avg_accuracy": avg_accuracy,
+    "metrics/avg_f1": avg_f1,
+    "metrics/avg_precision": avg_precision,
+    "metrics/avg_recall": avg_recall,
+})
+
+# %% Robust confusion matrix (avoid KeyError by normalizing strings + union classes)
+def _norm(s): 
+    return str(s).strip()
+
+# Gather true/pred labels as strings
+y_true_lbl = [_norm(x) for x in test_df["next_activity"].tolist()]
+y_pred_lbl = [_norm(predict_topk(p, k=1)[0]) for p in test_df["prefix"]]
+
+# Consistent label axis (union of observed classes), or use label_list for a fixed axis
+cm_labels = sorted(set(y_true_lbl) | set(y_pred_lbl))
+# If you prefer a stable axis across runs, do:
+# cm_labels = label_list
+
+try:
+    wandb.log({
+        "confusion_matrix": wandb.plot.confusion_matrix(
+            probs=None,
+            y_true=y_true_lbl,
+            preds=y_pred_lbl,
+            class_names=cm_labels
+        )
+    })
+except Exception as e:
+    print("W&B confusion_matrix failed, falling back to static image:", e)
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true_lbl, y_pred_lbl, labels=cm_labels)
+    plt.figure(figsize=(max(6, len(cm_labels)*0.6), max(5, len(cm_labels)*0.5)))
+    plt.imshow(cm, interpolation='nearest', aspect='auto')
+    plt.xlabel('Predicted'); plt.ylabel('True')
+    plt.xticks(ticks=range(len(cm_labels)), labels=cm_labels, rotation=90)
+    plt.yticks(ticks=range(len(cm_labels)), labels=cm_labels)
+    plt.tight_layout()
+    cm_path = os.path.join(plot_dir, f"confusion_matrix_{ts}.png")
+    plt.savefig(cm_path, dpi=150); plt.close()
+    wandb.log({"cm_image": wandb.Image(cm_path)})
+
+# %% Sample predictions (print + W&B table), like your LSTM ACT style
+sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
+table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
+
 for _, r in sample.iterrows():
-    pred, topk, p_pred, topk_p = predict_topk(r["prefix"], k=3)
-    print("Prefix:", " → ".join(r["prefix"]))
-    print("Gold:  ", r["next_activity"])
+    toks = r["prefix"] if isinstance(r["prefix"], list) else str(r["prefix"]).split()
+    pred, top5, p_pred, top5_p = predict_topk(toks, k=5)
+    
+    prefix_pretty = " → ".join(toks)
+    gold = str(r["next_activity"])
+    
+    print("Prefix:", prefix_pretty)
+    print("Gold:  ", gold)
     print(f"Pred:  {pred} ({p_pred:.3f})")
-    print("Top-3:", topk)
+    print("Top-5:", top5)
     print("-"*60)
     table.add_data(
         r["k"],
-        " → ".join(r["prefix"]),
-        r["next_activity"],
+        prefix_pretty,
+        gold,
         pred,
-        float(p_pred),
-        ", ".join(topk),
-        ", ".join([f"{x:.3f}" for x in topk_p])
+        p_pred,
+        ", ".join(top5),
+        ", ".join([f"{x:.3f}" for x in top5_p])
     )
 wandb.log({"samples": table})
 

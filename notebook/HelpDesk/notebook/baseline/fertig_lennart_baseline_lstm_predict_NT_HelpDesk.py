@@ -1,8 +1,28 @@
-# %% LSTM baseline — Next-Time (NT) prediction on HelpDesk
+# %% LSTM — Next-Time (NT) prediction
+# - Temporal split by case start (uses processed splits from `data.loader`)
+# - Inputs: tokenized activity prefixes (pre-padded to max_case_length) + 3 time features
+#   (recent_time, latest_time, time_passed), each standardized with train-fitted scalers
+# - Model: Token Embedding → (1–2) LSTM layers → Dropout
+#          + small MLP on time features → Concatenate → Dense(1) (prediction in standardized space)
+# - Target: next_time standardized (StandardScaler); train with LogCosh loss
+# - Reporting: inverse-transform predictions/labels to days → MAE / MSE / RMSE (days)
+# - Evaluation: per-k curves + macro averages; global scatter & error histogram; sample preds
+# - Training: Adam(clipnorm), val_loss checkpointing, EarlyStopping, ReduceLROnPlateau
+# - Logging/plots: W&B logging + headless matplotlib; fixed seeds for reproducibility
 
-import os
+import os, sys, random, glob, ctypes
 os.environ["MPLBACKEND"] = "Agg"  # headless matplotlib
-import json
+
+# Preload libstdc++ on some HPC stacks (no-op if not needed)
+prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
+cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
+if cands:
+    try:
+        mode = getattr(ctypes, "RTLD_GLOBAL", 0)  # ← use ctypes, not os
+        ctypes.CDLL(cands[0], mode=mode)
+    except OSError:
+        pass
+    
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -14,14 +34,18 @@ from datetime import datetime
 import wandb
 from wandb.integration.keras import WandbMetricsLogger
 
-from tensorflow.keras.models import Sequential
+from tensorflow.keras import Input, Model
+from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.layers import Embedding, LSTM, Dense, Dropout
-from tensorflow.keras.optimizers import AdamW
-from tensorflow.keras.preprocessing.sequence import pad_sequences
+from tensorflow.keras.optimizers import Adam
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.regularizers import l2
 
 from sklearn import metrics
+
+# Data Pipeline
+from data import loader
+from data.constants import Task
 
 # %% W&B
 api_key = os.getenv("WANDB_API_KEY")
@@ -29,33 +53,38 @@ wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
 config = {
-    "checkpoint_path": "/tmp/best_lstm_nt_HelpDesk.weights.h5",
-    "monitor_metric": "val_loss",
-    "monitor_mode": "min",
-    "pad_direction": "pre",
-    "truncating": "pre",
-    "early_stop_patience":  7,
-    "reduce_lr_factor":     0.5,
-    "reduce_lr_patience":   3,
-    "min_lr":               1e-6,
-    "max_ctx":              30,
-    "weight_decay":         1e-4,
-    "learning_rate":        3e-4,       # 5e-4 → 3e-4 (20.09.)
-    "batch_size":           64,         # 32 → 64 (20.09.)
-    "epochs":               90,
-    "embedding_dim":        256,        # 64 → 256 (20.09.)
-    "lstm_units_1":         256,        # 128 → 256 (20.09.)
-    "lstm_units_2":         128,        # 64 → 128 (20.09.)
-    "dropout":              0.30,       # 0.20 → 0.30 (20.09.)
-    "recurrent_dropout":    0.10,       # added (20.09.)
-    "l2":                   1e-5,      
-    "clipnorm":             1.0,
-    "use_huber":            True,       # added (20.09.)
-    "huber_delta":          0.5,        # added (20.09.)
-    "scale_range":          (-1, 1)
+    # bookkeeping
+    "dataset":                  "HelpDesk",
+    "checkpoint_path":          "/tmp/best_lstm_nt_HelpDesk.weights.h5",
+    "monitor_metric":           "val_loss",
+    "monitor_mode":             "min",
+    # optimization
+    "learning_rate":            3e-4, 
+    "clipnorm":                 1.0,
+    "early_stop_patience":      7,
+    "batch_size":               64,
+    "epochs":                   90,
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
+    # model scale
+    "embed_dim":                256,
+    "lstm_units_1":             256,        # 128 → 256 (20.09.)
+    "lstm_units_2":             128,        # 64 → 128 (20.09.)
+    "dropout":                  0.30,       # 0.20 → 0.30 (20.09.)
+    "recurrent_dropout":        0.10,       # added (20.09.)
+    "l2":                       1e-5,
 }
 
-# %% Init W&B
+# %%
+config["seed"] = 41
+tf.keras.utils.set_random_seed(config["seed"])
+tf.config.experimental.enable_op_determinism()
+random.seed(config["seed"])
+np.random.seed(config["seed"])
+
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
     project="baseline_lstm_NT_HelpDesk",
@@ -64,110 +93,73 @@ run = wandb.init(
     config=config
 )
 
-CHECKPOINT_PATH = config["checkpoint_path"]
-os.makedirs(os.path.dirname(CHECKPOINT_PATH), exist_ok=True)
+# %% 
+data_loader = loader.LogsDataLoader(name=config['dataset'])
 
-# %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_test.csv")
+(train_df, test_df, val_df,
+ x_word_dict, y_word_dict,
+ max_case_length, vocab_size,
+ num_output) = data_loader.load_data(task=Task.NEXT_TIME)
 
-for d in (train_df, val_df, test_df):
-    d["prefix"] = d["prefix"].astype(str).str.split()
-    # NT target standardization
-    if "next_time_delta" not in d.columns:
-            d.rename(columns={"next_time": "next_time_delta"}, inplace=True)
-
-print(f"Train prefixes: {len(train_df)} - Validation prefixes: {len(val_df)} - Test prefixes: {len(test_df)}")
 wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)})
-# %%
-PROC_DIR   = "/ceph/lfertig/Thesis/data/HelpDesk/processed"
-META_PATH  = os.path.join(PROC_DIR, "metadata.json")
 
-with open(META_PATH, "r") as f:
-    meta = json.load(f)
+(train_tok_x, train_time_x, train_y, time_scaler, y_scaler) = data_loader.prepare_data_next_time(train_df, x_word_dict, max_case_length)
+(val_tok_x, val_time_x, val_y, _, _) = data_loader.prepare_data_next_time(val_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
+(test_tok_x, test_time_x, test_y, _, _) = data_loader.prepare_data_next_time(test_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
 
-x_word_dict = meta["x_word_dict"]  # includes [PAD]=0, [UNK]=1
-vocab_size  = len(x_word_dict)
-PAD_ID = x_word_dict["[PAD]"]      # should be 0
-UNK_ID = x_word_dict["[UNK]"]      # should be 1
+# %% Inputs
+tok_in  = Input(shape=(max_case_length,), name="tokens")
+time_in = Input(shape=(3,), name="time_feats")
 
-# Use real prefix lengths, capped by max_ctx
-maxlen = min(config["max_ctx"], max(len(p) for p in train_df["prefix"]))
+x = Embedding(
+    input_dim=vocab_size,
+    output_dim=config["embed_dim"],
+    mask_zero=True
+)(tok_in)
 
-def encode_prefix(tokens):
-    # tokens is a list like ["assign-seriousness", "take-in-charge-ticket", ...]
-    return [x_word_dict.get(t, UNK_ID) for t in tokens]
+x = LSTM(
+    config["lstm_units_1"],
+    return_sequences=(config["lstm_units_2"] > 0),
+    dropout=config["dropout"],
+    recurrent_dropout=config["recurrent_dropout"],
+    kernel_regularizer=l2(config["l2"]),
+    recurrent_initializer="orthogonal",
+    recurrent_regularizer=l2(config["l2"])
+)(x)
+x = Dropout(config["dropout"])(x)
 
-def prepare_data(frame):
-    X = [encode_prefix(p) for p in frame["prefix"]]
-    X = pad_sequences(
-        X, maxlen=maxlen,
-        padding=config["pad_direction"], truncating=config["truncating"], value=PAD_ID
-    ).astype("int32")
-    # log1p to keep positivity and stabilize
-    y_log = np.log1p(frame["next_time_delta"].astype("float32").to_numpy()).reshape(-1, 1)
-    return X, y_log
-    
-X_train, y_train = prepare_data(train_df)
-X_val,   y_val   = prepare_data(val_df)
-X_test,  y_test  = prepare_data(test_df)
-
-def encode_seq(tokens): 
-    return encode_prefix(tokens)
-
-# %% Model
-layers = [
-    Embedding(
-        input_dim=vocab_size,  # vocab_size already includes PAD(0) and UNK(1)
-        output_dim=config["embedding_dim"],
-        mask_zero=True
-    ),
-    LSTM(
-        config["lstm_units_1"],
-        return_sequences=(config["lstm_units_2"] > 0),
+if config["lstm_units_2"] > 0:
+    x = LSTM(
+        config["lstm_units_2"],
         dropout=config["dropout"],
         recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
         recurrent_regularizer=l2(config["l2"])
-    ),
-    Dropout(config["dropout"])
-]
+    )(x)
+    x = Dropout(config["dropout"])(x)
 
-if config["lstm_units_2"] > 0:
-    layers += [
-        LSTM(
-            config["lstm_units_2"],
-            dropout=config["dropout"],
-            recurrent_dropout=config["recurrent_dropout"],
-            kernel_regularizer=l2(config["l2"]),
-            recurrent_initializer="orthogonal",
-            recurrent_regularizer=l2(config["l2"])
-        ),
-        Dropout(config["dropout"])
-    ]
+# Time branch (small MLP, keeps it simple)
+t = Dense(32, activation="relu", kernel_regularizer=l2(config["l2"])) (time_in)
 
-layers += [Dense(64, activation="relu", kernel_regularizer=l2(config["l2"])), 
-           Dropout(config["dropout"]), 
-           Dense(1, activation="linear")]
-model = Sequential(layers)
+# Fuse & head
+h = Concatenate()([x, t])
+h = Dense(64, activation="relu", kernel_regularizer=l2(config["l2"])) (h)
+h = Dropout(config["dropout"]) (h)
+out = Dense(1, activation="linear")(h)
 
-optimizer = AdamW(learning_rate=config["learning_rate"],
-                    weight_decay=config["weight_decay"],
-                    clipnorm=config["clipnorm"])
-
-loss = (tf.keras.losses.Huber(delta=config["huber_delta"]) if config["use_huber"] else "mse")
+# %% Model
+model = Model(inputs=[tok_in, time_in], outputs=out)
 
 model.compile(
-    optimizer=optimizer,
-    loss=loss,
+    optimizer=Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]),
+    loss=tf.keras.losses.LogCosh(),
     metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")]
 )
 
 # %% Callbacks
 checkpoint_cb = ModelCheckpoint(
-    filepath=CHECKPOINT_PATH,
+    filepath=config["checkpoint_path"],
     save_weights_only=True,
     monitor=config["monitor_metric"],
     save_best_only=True,
@@ -189,47 +181,54 @@ reduce_lr = ReduceLROnPlateau(
 )
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
+    [train_tok_x, train_time_x], train_y,
+    validation_data=([val_tok_x, val_time_x], val_y),
     epochs=config["epochs"],
     batch_size=config["batch_size"],
     callbacks=[checkpoint_cb, early_stop, reduce_lr, WandbMetricsLogger()],
     verbose=2
 )
 
-# Safety: ensure checkpoint exists then load best
-if not os.path.exists(CHECKPOINT_PATH):
-    model.save_weights(CHECKPOINT_PATH)
-model.load_weights(CHECKPOINT_PATH)
-
 # %% Inference helper (returns days)
-def predict_delta_days(prefix_tokens):
-    x = pad_sequences([encode_seq(prefix_tokens)], maxlen=maxlen,
-                      padding=config["pad_direction"], truncating=config["truncating"], value=PAD_ID)
-    y_log = model.predict(x, verbose=0)[0, 0]
-    y_days = float(np.expm1(y_log))
+def predict_delta_days(prefix_str: str, recent_time=0.0, latest_time=0.0, time_passed=0.0) -> float:
+    df1 = pd.DataFrame([{
+        "prefix": prefix_str,
+        "recent_time": float(recent_time),
+        "latest_time": float(latest_time),
+        "time_passed": float(time_passed),
+        "k": 0
+    }])
+    tok_x, time_x, _, _, _ = data_loader.prepare_data_next_time(
+        df1, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    y_scaled = model.predict([tok_x, time_x], verbose=0)
+    y_days = float(y_scaler.inverse_transform(y_scaled)[0, 0])
     return max(0.0, y_days)
 
 # %% Per-k evaluation (metrics in days)
-k_vals, counts, maes, mses, rmses = [], [], [], [], []
-for k in sorted(test_df["k"].astype(int).unique()):
+k_vals, maes, mses, rmses, counts = [], [], [], [], []
+
+for k in range(1, int(max_case_length) + 1):
     subset = test_df[test_df["k"] == k]
     if subset.empty:
         continue
-    X_t = pad_sequences([encode_seq(p) for p in subset["prefix"]], maxlen=maxlen,
-                    padding=config["pad_direction"], truncating=config["truncating"], value=PAD_ID)
-    y_true = subset["next_time_delta"].values.reshape(-1, 1).astype("float32")
-    y_true = np.maximum(y_true, 0.0)
 
-    # predict (log) then inverse-transform
-    y_pred_log = model.predict(X_t, verbose=0)
-    y_pred = np.expm1(y_pred_log)
-    y_pred = np.maximum(y_pred, 0.0)
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(
+        subset, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
 
-    k_vals.append(k); counts.append(len(subset))
-    mae  = metrics.mean_absolute_error(y_true, y_pred)
-    mse  = metrics.mean_squared_error(y_true, y_pred)
+    y_pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    y_true_days   = y_scaler.inverse_transform(sub_y)
+    y_pred_days   = y_scaler.inverse_transform(y_pred_scaled)
+
+    mae  = metrics.mean_absolute_error(y_true_days, y_pred_days)
+    mse  = metrics.mean_squared_error(y_true_days, y_pred_days)
     rmse = float(np.sqrt(mse))
+
+    k_vals.append(k)
+    counts.append(len(subset))
     maes.append(mae); mses.append(mse); rmses.append(rmse)
 
 # Macro averages across k-bins
@@ -242,19 +241,19 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/Baselines/LSTM/NT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/NT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history
 
 # Training curves (log-space targets)
 plt.figure(figsize=(8,5))
-plt.plot(h["loss"], label="Train Loss")
-plt.plot(h["val_loss"], label="Val Loss")
-plt.title("Loss over Epochs")
-plt.xlabel("Epoch"); plt.ylabel("Huber Loss (log-space)")
+plt.plot(h["loss"], label="Train")
+plt.plot(h["val_loss"], label="Validation")
+plt.title("Loss over Epochs (log-space)")
+plt.xlabel("Epoch"); plt.ylabel("Loss (Huber/MSE in log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"loss_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"loss_logspace_{ts}.png"), dpi=150); plt.close()
 
 plt.figure(figsize=(8,5))
 plt.plot(h["mae"], label="Train MAE (log-space)")
@@ -262,13 +261,14 @@ plt.plot(h["val_mae"], label="Val MAE (log-space)")
 plt.title("MAE over Epochs (log-space)")
 plt.xlabel("Epoch"); plt.ylabel("MAE (log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"mae_log_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"mae_logspace_{ts}.png"), dpi=150); plt.close()
 
 # Per-k (days)
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, maes, marker='o', label='MAE (days)')
-    plt.title('MAE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MAE (days)')
+    plt.title('MAE vs. Prefix Length (k)')
+    plt.xlabel('Prefix Length (k)'); plt.ylabel('MAE (days)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"mae_vs_k_{ts}.png"), dpi=150); plt.close()
 
@@ -280,7 +280,8 @@ if len(k_vals):
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, mses, marker='o', label='MSE (days^2)')
-    plt.title('MSE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MSE')
+    plt.title('MSE vs. Prefix Length (k)')
+    plt.xlabel('Prefix Length (k)'); plt.ylabel('MSE (days^2)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"mse_vs_k_{ts}.png"), dpi=150); plt.close()
 
@@ -299,15 +300,14 @@ wandb.log({
 })
 
 # %% Global scatter + error histogram (days)
-X_all = pad_sequences([encode_seq(p) for p in test_df["prefix"]], maxlen=maxlen,
-                      padding=config["pad_direction"], truncating=config["truncating"], value=PAD_ID)
-y_true_all = test_df["next_time_delta"].values.reshape(-1, 1)
-y_pred_all = np.expm1(model.predict(X_all, verbose=0))
-y_pred_all = np.maximum(y_pred_all, 0.0)
-abs_err = np.abs(y_true_all - y_pred_all).reshape(-1)
+y_pred_scaled_all = model.predict([test_tok_x, test_time_x], verbose=0)
+y_true_all_days   = y_scaler.inverse_transform(test_y)
+y_pred_all_days   = y_scaler.inverse_transform(y_pred_scaled_all)
+abs_err = np.abs(y_true_all_days - y_pred_all_days).reshape(-1)
 
 tab = wandb.Table(
-    data=[[float(y_true_all[i,0]), float(y_pred_all[i,0]), float(abs_err[i])] for i in range(len(abs_err))],
+    data=[[float(y_true_all_days[i,0]), float(y_pred_all_days[i,0]), float(abs_err[i])]
+          for i in range(len(abs_err))],
     columns=["true_days", "pred_days", "abs_err_days"]
 )
 wandb.log({
@@ -317,20 +317,36 @@ wandb.log({
 
 # %% Sample predictions (days)
 sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
-s_table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+
 for _, r in sample.iterrows():
-    pred = predict_delta_days(r["prefix"])
-    gold = float(r["next_time_delta"])
-    s_table.add_data(r["case_id"], r["k"], " → ".join(r["prefix"]), gold, pred, abs(gold - pred))
-    print("Prefix:", " → ".join(r["prefix"]))
-    print(f"Gold (days): {gold:.2f}")
-    print(f"Pred (days): {pred:.2f}")
+    sub = r.to_frame().T
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(
+        sub, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    gold_days = float(y_scaler.inverse_transform(sub_y)[0, 0])
+    pred_days = float(y_scaler.inverse_transform(pred_scaled)[0, 0])
+    
+    print("Prefix:", " → ".join(r["prefix"].split() if isinstance(r["prefix"], str) else r["prefix"]))
+    print(f"Gold (days): {gold_days:.2f}")
+    print(f"Pred (days): {pred_days:.2f}")
     print("-"*60)
-wandb.log({"samples": s_table})
+    
+    table.add_data(
+        r["case_id"], 
+        int(r["k"]), 
+        r["prefix"], 
+        gold_days, 
+        pred_days, 
+        abs(gold_days - pred_days)
+    )
+wandb.log({"samples": table})
 
 # %% Save checkpoint as W&B artifact
 artifact = wandb.Artifact("lstm_nt_model_helpdesk", type="model")
-artifact.add_file(CHECKPOINT_PATH)
+artifact.add_file(config["checkpoint_path"])
 run.log_artifact(artifact)
 
 # %%

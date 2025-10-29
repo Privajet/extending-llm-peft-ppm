@@ -1,0 +1,29 @@
+# env-llm.qwen.yml
+name: thesis-llm-qwen
+channels: [conda-forge]
+dependencies:
+  - python=3.12
+  - numpy=1.26.*
+  - scipy=1.13.*
+  - pandas=2.2.*
+  - scikit-learn=1.5.*
+  - matplotlib-base>=3.8
+  - ipykernel
+  - libgcc-ng>=14
+  - libstdcxx-ng>=14
+  - pip
+  - pip:
+      - --extra-index-url https://download.pytorch.org/whl/cu128
+      - torch==2.8.0
+      - "transformers>=4.45.0"     # adds native support for `qwen3`
+      - "tokenizers>=0.20.0"
+      - "accelerate>=0.34.0"
+      - einops
+      - sentencepiece
+      - protobuf
+      - datasets>=2.19
+      - evaluate>=0.4
+      - peft==0.11.1
+      - trl==0.9.6
+      - "wandb>=0.16.6,<0.18"
+      - -U hf_transfer

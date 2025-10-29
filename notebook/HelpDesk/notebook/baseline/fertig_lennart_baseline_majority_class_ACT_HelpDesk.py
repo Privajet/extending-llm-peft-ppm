@@ -1,6 +1,21 @@
-# %%
-import os
-os.environ["MPLBACKEND"] = "Agg"  # headless matplotlib
+# %% Majority Baseline — Next Activity (ACT)
+# - Rule: always predict the most frequent next activity from the TRAIN set.
+# - Metrics: per-k (accuracy, weighted F1/precision/recall) + global VAL/TEST micro accuracy.
+# - Logging: W&B curves/tables + confusion matrix; simple sample table using the majority class.
+# - Plots: accuracy/F1 vs. prefix length k (saved headlessly to disk).
+
+import os, sys, glob, ctypes
+os.environ["MPLBACKEND"] = "Agg"   # headless matplotlib
+
+# Preload libstdc++ on some HPC stacks (no-op if not needed)
+prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
+cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
+if cands:
+    try:
+        mode = getattr(ctypes, "RTLD_GLOBAL", 0)  # ← use ctypes, not os
+        ctypes.CDLL(cands[0], mode=mode)
+    except OSError:
+        pass
 
 import numpy as np
 import pandas as pd
@@ -11,18 +26,26 @@ import matplotlib.pyplot as plt
 from datetime import datetime
 
 import wandb
+
 from sklearn import metrics
+
+# Data Pipeline
+from data import loader
+from data.constants import Task
 
 # %%
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
+# %% Config
 config = {
-    "baseline": "majority_class",
+    "dataset":      "HelpDesk",
 }
+
+# %%
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
-    project="baseline_majority_ACT_HelpDesk",
+    project=f"baseline_majority_ACT_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"majority_act_{ts}",
     config=config,
@@ -31,140 +54,155 @@ run = wandb.init(
 )
 
 # %%
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_test.csv")
+data_loader = loader.LogsDataLoader(name=config['dataset'])
 
-for d in (train_df, val_df, test_df):
-    d.rename(columns={"next_act": "next_activity"}, inplace=True)
+(train_df, test_df, val_df,
+ x_word_dict, y_word_dict,
+ max_case_length, vocab_size,
+ num_output) = data_loader.load_data(task=Task.NEXT_ACTIVITY)
 
-print(f"Train prefixes: {len(train_df)} - Validation prefixes: {len(val_df)} - Test prefixes: {len(test_df)}")
 wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)})
 
+inv_y = {v: k for k, v in y_word_dict.items()}
+
 # %%
-majority_label = train_df["next_activity"].value_counts().idxmax()
-print(f"Majority next activity (train): {majority_label}")
+vc = train_df["next_act"].value_counts()
+majority_label = vc.idxmax()
+p_majority = float(vc.loc[majority_label] / vc.sum())
+print(f"Majority next activity (train): {majority_label}  (p={p_majority:.3f})")
 
 # %%
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
-maxlen = test_df["k"].max() if len(test_df) else 0
 
-for k in sorted(test_df["k"].astype(int).unique()):
-    subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
+for i in range(int(max_case_length)):
+    subset = test_df[test_df["k"] == i]
+    if len(subset) > 0:
+        y_true = subset["next_act"].tolist()
+        y_pred = [majority_label] * len(y_true)
 
-    y_true = subset["next_activity"].tolist()
-    y_pred = [majority_label] * len(y_true)
+        accuracy = metrics.accuracy_score(y_true, y_pred)
+        precision, recall, fscore, _ = metrics.precision_recall_fscore_support(
+            y_true, y_pred, average="weighted", zero_division=0
+        )
+        k_vals.append(i); counts.append(len(y_true))
+        accuracies.append(accuracy); fscores.append(fscore); precisions.append(precision); recalls.append(recall)
 
-    acc = metrics.accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = metrics.precision_recall_fscore_support(
-        y_true, y_pred, average="weighted", zero_division=0
-    )
 
-    k_vals.append(k); counts.append(len(subset))
-    accuracies.append(acc); fscores.append(f1); precisions.append(prec); recalls.append(rec)
+avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
+avg_f1 = float(np.mean(fscores)) if fscores else float("nan")
+avg_precision = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall = float(np.mean(recalls)) if recalls else float("nan")
 
-# Macro averages across k-bins
-avg_acc = float(np.mean(accuracies)) if accuracies else float("nan")
-avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_p   = float(np.mean(precisions)) if precisions else float("nan")
-avg_r   = float(np.mean(recalls))    if recalls    else float("nan")
-
-print(f"Average accuracy across all prefixes:  {avg_acc:.4f}")
+print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
-print(f"Average precision across all prefixes: {avg_p:.4f}")
-print(f"Average recall across all prefixes:    {avg_r:.4f}")
+print(f"Average precision across all prefixes: {avg_precision:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}")
 
-# %%
-plot_dir = "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/Baselines/MAJ/ACT"
+# Micro (global) accuracy over all VAL prefixes
+y_val_true = val_df["next_act"].tolist()
+y_val_pred = [majority_label] * len(y_val_true)
+micro_acc = metrics.accuracy_score(y_val_true, y_val_pred)
+print(f"[VAL] Micro (global) accuracy: {micro_acc:.4f}")
+
+# Micro (global) accuracy over all TEST prefixes
+y_test_true = test_df["next_act"].tolist()
+y_test_pred = [majority_label] * len(y_test_true)
+micro_acc = metrics.accuracy_score(y_test_true, y_test_pred)
+print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
+
+# %% Plots → disk
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/MAJ/ACT"
 os.makedirs(plot_dir, exist_ok=True)
 
+# Acc/F1 vs k
 if len(k_vals):
-    plt.figure(figsize=(8, 5))
+    plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker='o', label='Accuracy')
-    plt.title('Accuracy vs. Prefix Length (k)')
-    plt.xlabel('Prefix Length (k)'); plt.ylabel('Accuracy')
+    plt.title('Accuracy vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('Accuracy')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
 
-    plt.figure(figsize=(8, 5))
-    plt.plot(k_vals, fscores, marker='o', label='F1 Score')
-    plt.title('F1 Score vs. Prefix Length (k)')
-    plt.xlabel('Prefix Length (k)'); plt.ylabel('F1 (weighted)')
+    plt.figure(figsize=(8,5))
+    plt.plot(k_vals, fscores, marker='o', label='F1 (weighted)')
+    plt.title('F1 vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('F1 (weighted)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
 print(f"Saved plots to: {plot_dir}")
 
-# %%
+# %% Log per-k curves + macro averages (same keys)
 wandb.log({
     "curves/k": k_vals,
+    "curves/counts": counts,
     "curves/accuracy": accuracies,
     "curves/f1": fscores,
     "curves/precision": precisions,
     "curves/recall": recalls,
-    "curves/counts": counts,
-    "metrics/avg_accuracy": avg_acc,
+    "metrics/avg_accuracy": avg_accuracy,
     "metrics/avg_f1": avg_f1,
-    "metrics/avg_precision": avg_p,
-    "metrics/avg_recall": avg_r,
+    "metrics/avg_precision": avg_precision,
+    "metrics/avg_recall": avg_recall,
 })
 
-# %%
-y_true_all = test_df["next_activity"].tolist()
-y_pred_all = [majority_label] * len(test_df)
-
-y_true_str = [str(s).strip() for s in y_true_all]
-y_pred_str = [str(s).strip() for s in y_pred_all]
-cm_classes = sorted(set(y_true_str) | set(y_pred_str))
+# %% Confusion matrix
+y_true_lbl = [str(s).strip() for s in y_test_true]
+y_pred_lbl = [str(s).strip() for s in y_test_pred]
+cm_labels = sorted(set(y_true_lbl) | set(y_pred_lbl))
 
 try:
     wandb.log({
         "confusion_matrix": wandb.plot.confusion_matrix(
             probs=None,
-            y_true=y_true_str,
-            preds=y_pred_str,
-            class_names=cm_classes
+            y_true=y_true_lbl,
+            preds=y_pred_lbl,
+            class_names=cm_labels
         )
     })
 except Exception as e:
-    print("W&B confusion_matrix failed; skipping. Error:", e)
+    print("W&B confusion_matrix failed, falling back to static image:", e)
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true_lbl, y_pred_lbl, labels=cm_labels)
+    plt.figure(figsize=(max(6, len(cm_labels)*0.6), max(5, len(cm_labels)*0.5)))
+    plt.imshow(cm, interpolation='nearest', aspect='auto')
+    plt.xlabel('Predicted'); plt.ylabel('True')
+    plt.xticks(ticks=range(len(cm_labels)), labels=cm_labels, rotation=90)
+    plt.yticks(ticks=range(len(cm_labels)), labels=cm_labels)
+    plt.tight_layout()
+    cm_path = os.path.join(plot_dir, f"confusion_matrix_{ts}.png")
+    plt.savefig(cm_path, dpi=150); plt.close()
+    wandb.log({"cm_image": wandb.Image(cm_path)})
 
-# %%
-# Global train distribution for 'probabilities'
-train_freq = train_df["next_activity"].value_counts()
-train_total = len(train_df)
-p_majority = float(train_freq.get(majority_label, 0) / train_total) if train_total else float("nan")
-top5_labels = train_freq.index[:5].tolist()
-top5_probs  = (train_freq.iloc[:5] / train_total).astype(float).tolist() if train_total else []
-
-# Pad to 5 if classes < 5 (optional)
-while len(top5_labels) < 5:
-    top5_labels.append("")
-    top5_probs.append(0.0)
-
+# %% Sample predictions (print + W&B table)
 sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
 table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
 
 for _, r in sample.iterrows():
+    prefix_tokens = str(r["prefix"]).split()
     pred = majority_label
-    print("Prefix:", r["prefix"])
-    print("Gold:  ", r["next_activity"])
-    print(f"Pred:  {pred} ({p_majority:.3f})")
-    print("Top-5:", top5_labels)
+    p_pred = p_majority
+    top5 = [majority_label]    # majority-only baseline
+    top5_p = [p_majority]
+
+    prefix_pretty = " → ".join(prefix_tokens)
+    gold = str(r["next_act"])
+
+    print("Prefix:", prefix_pretty)
+    print("Gold:  ", gold)
+    print(f"Pred:  {pred} ({p_pred:.3f})")
+    print("Top-5:", top5)
     print("-"*60)
+
     table.add_data(
         r["k"],
-        " → ".join(r["prefix"]),
-        r["next_activity"],
+        prefix_pretty,
+        gold,
         pred,
-        p_majority,
-        ", ".join(top5_labels),
-        ", ".join([f"{p:.3f}" for p in top5_probs])
+        float(p_pred),
+        ", ".join(top5),
+        ", ".join([f"{x:.3f}" for x in top5_p])
     )
 
 wandb.log({"samples": table})
 
 # %%
-run.finish()
+wandb.finish()

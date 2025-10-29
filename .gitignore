@@ -1,36 +1,48 @@
-# Python
+# Python artifacts
 __pycache__/
 *.pyc
 
-# Jupyter
+# Jupyter notebooks
 .ipynb_checkpoints/
 *.ipynb_export/
 *.ipynb_cache/
 
-# Logs & runs
+# Logs and experiment tracking
 *.log
 .wandb/
 lightning_logs/
 runs/
 
-# Data (adjust to your layout!)
+# Data files (adjust as needed)
 data/
+external/
+models/
+logs/
+achieve/
+src/
+skpm/
 *.csv
 *.csv.gz
 *.parquet
 *.npz
 *.npy
 
-# OS clutter
-.DS_Store__pycache__/
-*.pyc
-.ipynb_checkpoints/
-.wandb/
-data/
-*.csv
-*.csv.gz
-*.parquet
-*.npz
-*.npy
-*.log
+# OS-specific clutter
 .DS_Store
+
+# Caches and environments
+.cache/
+.venv/
+
+# Editor project files
+.vscode/
+
+# Archives (modify as needed)
+.achieve/
+.archive/
+
+# Experiment or temp folders
+skpm/
+
+# Ignore test scripts
+test.py

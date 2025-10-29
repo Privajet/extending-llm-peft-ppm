@@ -108,7 +108,7 @@ FS_CFG = {
     "use_cond_prior_by_last_act": True,
     "cond_alpha": 0.25,         # tune on val
     # validation tuning (tiny grid search)
-    "do_val_tune": True,
+    "do_val_tune": False,
     "grid_taus":   [0.75, 0.9, 1.0, 1.1],
     "grid_alphas": [0.0, 0.15, 0.25, 0.35],
     "grid_cond":   [0.0, 0.15, 0.25, 0.4],

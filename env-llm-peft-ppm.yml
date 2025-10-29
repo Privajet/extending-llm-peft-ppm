@@ -1,0 +1,20 @@
+name: llm-peft-ppm
+channels:
+  - conda-forge
+dependencies:
+  - python=3.10
+  - numpy=1.26
+  - pandas=2.2
+  - scikit-learn=1.5
+  - matplotlib
+  - ipykernel
+  - pip
+  - pip:
+      - wandb>=0.16.6,<0.20
+      - transformers==4.49.0
+      - peft==0.14.0
+      - torchmetrics==1.7.4
+      - datasets==4.0.0
+      - processtransformer==0.1.3
+      - "tabpfn>=2.1.1,<3"
+      - "skpm @ git+https://github.com/raseidi/skpm.git"

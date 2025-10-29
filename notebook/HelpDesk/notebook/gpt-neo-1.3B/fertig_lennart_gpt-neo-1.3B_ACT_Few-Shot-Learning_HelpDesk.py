@@ -275,8 +275,7 @@ def retrieve_demos(prefix, n_shots, max_demo_events, mmr_lambda=0.5):
         return []
     return [(p, g) for (p, g, _) in chosen][:n_shots]
 
-# %% Candidate pruning
-# Precompute global label freq (you already have train_label_freq)
+# %% Candidate pruning: Precompute global label freq (you already have train_label_freq)
 label_freq_counter = Counter(train_df["next_activity"])
 
 def candidate_labels(prefix, K):
@@ -329,6 +328,9 @@ def _prompt_cache_key(prefix, cands, demos):
     return (q_tail, cands_key, demos_key)
 
 def get_prompt_ids(prefix, cands, demos):
+    """
+    Build chat messages and apply Qwen chat template, then tokenize (no label).
+    """
     key = _prompt_cache_key(prefix, cands, demos)
     if key in _PROMPT_CACHE:
         _PROMPT_CACHE.move_to_end(key)
@@ -462,6 +464,8 @@ def tune_on_val():
         "val_acc": best[0], "temperature": FS_CFG["temperature"], "prior_alpha": FS_CFG["prior_alpha"],
         "ctx_events": FS_CFG["ctx_events"], "K_prune": FS_CFG["K_prune"], "n_shots": FS_CFG["n_shots"]
     }}, allow_val_change=True)
+    
+tune_on_val()
 
 # Record final knobs + a prompt sample (debug)
 if len(val_df):
@@ -482,38 +486,38 @@ if len(val_df):
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
 for k in sorted(test_df["k"].astype(int).unique()):
-    subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
-    y_true = subset["next_activity"].tolist()
-    y_pred = [predict_topk(p, k=1)[0] for p in subset["prefix"]]
-    acc = accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
-    k_vals.append(k); counts.append(len(subset))
-    accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
+    test_data_subset = test_df[test_df["k"] == k]
+    if len(test_data_subset) > 0:
+        y_true = test_data_subset["next_activity"].tolist()
+        y_pred = [predict_topk(p, k=1)[0] for p in test_data_subset["prefix"]]
+        acc = accuracy_score(y_true, y_pred)
+        prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(k); counts.append(len(test_data_subset))
+        accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
 
-avg_acc = float(np.mean(accuracies)) if accuracies else float("nan")
+avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
 avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_p   = float(np.mean(precisions)) if precisions else float("nan")
-avg_r   = float(np.mean(recalls))    if recalls    else float("nan")
+avg_precision   = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall   = float(np.mean(recalls))    if recalls    else float("nan")
 
-print(f"Average accuracy across all prefixes:  {avg_acc:.4f}")
+print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
-print(f"Average precision across all prefixes: {avg_p:.4f}")
-print(f"Average recall across all prefixes:    {avg_r:.4f}")
+print(f"Average precision across all prefixes: {avg_precision:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}")
 
-wandb.log({
-    "curves/k": k_vals,
-    "curves/counts": counts,
-    "curves/accuracy": accuracies,
-    "curves/f1": fscores,
-    "curves/precision": precisions,
-    "curves/recall": recalls,
-    "metrics/avg_accuracy": avg_acc,
-    "metrics/avg_f1": avg_f1,
-    "metrics/avg_precision": avg_p,
-    "metrics/avg_recall": avg_r,
-})
+# Micro (global) accuracy over all val prefixes
+# Total correct / total samples across the entire val set
+y_true_all = val_df["next_activity"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in val_df["prefix"]]
+micro_acc  = accuracy_score(y_true_all, y_pred_all)
+print(f"[Val] Micro (global) accuracy: {micro_acc:.4f}")
+
+# Micro (global) accuracy over all test prefixes
+# Total correct / total samples across the entire test set
+y_true_all = test_df["next_activity"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in test_df["prefix"]]
+micro_acc  = accuracy_score(y_true_all, y_pred_all)
+print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
 
 # %% Top-k accuracy on the whole test set 
 def topk_accuracy(y_true, topk_labels_list, k=3):
@@ -547,6 +551,20 @@ if len(k_vals):
     plt.savefig(os.path.join(plot_dir, f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
 print(f"Saved plots to: {plot_dir}")
+
+# %% Log per-k curves + macro averages
+wandb.log({
+    "curves/k": k_vals,
+    "curves/counts": counts,
+    "curves/accuracy": accuracies,
+    "curves/f1": fscores,
+    "curves/precision": precisions,
+    "curves/recall": recalls,
+    "metrics/avg_accuracy": avg_accuracy,
+    "metrics/avg_f1": avg_f1,
+    "metrics/avg_precision": avg_precision,
+    "metrics/avg_recall": avg_recall,
+})
 
 # %% Samples table
 sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df

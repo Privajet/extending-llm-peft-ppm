@@ -1,0 +1,71 @@
+#!/bin/bash
+#SBATCH --job-name=P2P_RT_TabPFN_training
+#SBATCH --cpus-per-task=10
+#SBATCH --mem=10G
+#SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
+#SBATCH --mail-type=BEGIN,END,FAIL
+#SBATCH --gres=gpu:1
+#SBATCH --partition=gpu-vram-48gb
+#SBATCH --chdir=/ceph/lfertig/Thesis
+#SBATCH --output=logs/%x_%j.out
+#SBATCH --error=logs/%x_%j.err
+
+set -euo pipefail
+
+# Caches & Logging
+export HF_HOME="$SLURM_SUBMIT_DIR/.cache/huggingface"
+export TRANSFORMERS_CACHE="$HF_HOME/transformers"
+export TOKENIZERS_PARALLELISM=false
+export WANDB_DIR="$SLURM_SUBMIT_DIR/.wandb"
+
+# Immer aus dem Submit-Verzeichnis starten
+cd "$SLURM_SUBMIT_DIR"
+mkdir -p logs .wandb .cache/huggingface
+
+# Conda initialisieren und Env aktivieren
+eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
+
+# >>> HIER die gewünschte Env wählen <<<
+ENV_NAME=${ENV_NAME:-thesis-baselines}
+# ENV_NAME=${ENV_NAME:-thesis-llm}
+conda activate "$ENV_NAME"
+
+# Threads
+export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+
+# GPU Info (optional)
+nvidia-smi || true
+echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
+python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
+
+# BASELINES
+# Majority:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_ACT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_NT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_RT_P2P.py
+
+# NGram:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_ngram_ACT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_ngram_NT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_ngram_RT_P2P.py
+
+# LSTM:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_lstm_predict_NT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_lstm_predict_RT_P2P.py
+
+# ProcessTransformer:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_processTransformer_ACT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_processTransformer_NT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_processTransformer_RT_P2P.py
+
+# TabPFN:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_NT_P2P.py
+srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_P2P.py
+
+# LLM (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/fertig_lennart_gpt-neo-1.3B_ACT_Fine-Tuning_SFT_Trainier_P2P.py
