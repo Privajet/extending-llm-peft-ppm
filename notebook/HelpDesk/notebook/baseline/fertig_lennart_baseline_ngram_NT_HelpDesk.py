@@ -41,10 +41,13 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":   "HelpDesk",
-    "n_values":  [2, 3, 4, 5, 6],   # candidates for n
-    "min_count": 3,                 # prune contexts with < min_count observations
+    # bookkeeping
+    "dataset":                  DATASET,
+    "n_values":                 [2, 3, 4, 5, 6],   # candidates for n
+    "min_count":                3,                 # prune contexts with < min_count observations
 }
 
 # %% Init

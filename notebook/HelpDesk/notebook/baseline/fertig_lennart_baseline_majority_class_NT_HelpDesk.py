@@ -36,9 +36,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":          "HelpDesk",
-    "constant_choice":  "median"  # or "mean"
+    # bookkeeping
+    "dataset":                  DATASET,
+    "constant_choice":          "median"  # or "mean"
 }
 
 # %%

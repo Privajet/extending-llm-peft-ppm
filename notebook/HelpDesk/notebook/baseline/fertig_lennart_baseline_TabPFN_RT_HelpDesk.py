@@ -1,4 +1,4 @@
-# %% TabPFN — Remaining Time (RT) prediction (HelpDesk)
+# %% TabPFN — Remaining Time (RT) prediction
 # - Target: RT_k = t_end − t_{k−1}, trained in standardized log-space (from loader);
 #   predictions are inverse-transformed via y_scaler and expm1 to report days.
 # - Features: fixed-length padded activity IDs (via x_word_dict; pre-trunc + pre-pad)
@@ -54,12 +54,12 @@ print("Using device:", DEVICE)
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
-# %%
+# %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "monitor_metric":           "val_loss",
-    "monitor_mode":             "min",
+    "dataset":                  DATASET,
     # model scale
     "sample_size":              10000,  # downsample train for speed/stability; set None to disable
 }

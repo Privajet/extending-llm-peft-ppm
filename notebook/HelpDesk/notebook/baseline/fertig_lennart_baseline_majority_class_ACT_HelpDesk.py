@@ -38,8 +38,11 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":      "HelpDesk",
+    # bookkeeping
+    "dataset":                  DATASET
 }
 
 # %%

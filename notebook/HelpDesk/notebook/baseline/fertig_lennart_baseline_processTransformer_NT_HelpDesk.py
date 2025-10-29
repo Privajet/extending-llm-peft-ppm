@@ -1,4 +1,4 @@
-# %% ProcessTransformer — Next-Time (NT) prediction on HelpDesk
+# %% ProcessTransformer — Next-Time (NT) prediction
 # - Temporal split by case start
 # - Prefix of length k predicts Δt_k = t_k - t_{k-1} in days
 # - Token+Position embedding → (1–2) Transformer blocks → masked average → Dense(1)
@@ -45,26 +45,28 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-  # bookkeeping
-  "dataset":                "HelpDesk",
-  "checkpoint_path":        "/tmp/best_transformer_nt_HelpDesk.weights.h5",
-  "monitor_metric":         "val_loss",
-  "monitor_mode":           "min",
-  # optimization
-  "learning_rate":          3e-4,
-  "clipnorm":               1.0,
-  "batch_size":             64,
-  "epochs":                 90,
-  # scheduler & early stop
-  "early_stop_patience":    7,
-  "reduce_lr_factor":       0.5,
-  "reduce_lr_patience":     3,
-  "min_lr":                 1e-6,
-  # model scale
-  "embed_dim":              256,      # try 256 if VRAM permits
-  "num_heads":              8,        # embed_dim % num_heads == 0
-  "ff_dim":                 512,      # 4x embed_dim (use 1024 for embed_dim=256)
+    # bookkeeping
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_transformer_nt_{DATASET}.weights.h5",
+    "monitor_metric":           "val_loss",
+    "monitor_mode":             "min",
+    # optimization
+    "learning_rate":            3e-4,
+    "clipnorm":                 1.0,
+    "batch_size":               64,
+    "epochs":                   90,
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
+    # model scale
+    "embed_dim":                256,      # try 256 if VRAM permits
+    "num_heads":                8,        # embed_dim % num_heads == 0
+    "ff_dim":                   512,      # 4x embed_dim (use 1024 for embed_dim=256)
 }
 
 # %%

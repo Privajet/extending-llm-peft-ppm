@@ -52,10 +52,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "checkpoint_path":          "/tmp/best_lstm_rt_HelpDesk.weights.h5",
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_lstm_rt_{DATASET}.weights.h5",
     "monitor_metric":           "val_loss",
     "monitor_mode":             "min",
     # optimization

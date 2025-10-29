@@ -1,7 +1,7 @@
 # %% N-gram — Remaining-Time (RT) prediction
 # - Temporal split by case start (uses processed splits from `data.loader`)
 # - Each training prefix provides target remaining_time (days)
-# - Model: mean remaining_time per context using activity n-grams (context = last n−1 activities)
+# - Model: mean remaining_time_days per context using activity n-grams (context = last n−1 activities)
 # - Back-off: (n−1)-gram → ... → unigram → global mean
 # - Model selection: choose n (from config.n_values) minimizing validation MAE
 # - Evaluation: per-k MAE/MSE/RMSE (days) + macro averages; scatter + histogram; sample preds
@@ -41,10 +41,13 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":   "HelpDesk",
-    "n_values":  [2, 3, 4, 5, 6],   # candidate n
-    "min_count": 3,                 # prune contexts with < min_count observations
+    # bookkeeping
+    "dataset":                  DATASET,
+    "n_values":                 [2, 3, 4, 5, 6],   # candidate n
+    "min_count":                3,                 # prune contexts with < min_count observations
 }
 
 # %% Init + seeds
@@ -83,7 +86,7 @@ def fit_ngram_rt(df_part: pd.DataFrame, n: int, min_count: int):
     levels = {L: defaultdict(lambda: {"sum": 0.0, "count": 0}) for L in range(1, n)}
     for _, r in df_part.iterrows():
         prefix_tokens = to_tokens(r["prefix"])
-        y = float(r["remaining_time"])
+        y = float(r["remaining_time_days"])
         max_ctx = min(len(prefix_tokens), n - 1)
         for L in range(1, max_ctx + 1):
             ctx = tuple(prefix_tokens[-L:])
@@ -106,7 +109,7 @@ def predict_remaining(prefix_tokens, levels, n: int, global_mean: float):
     return global_mean
 
 # %% Global mean (days) from TRAIN
-GLOBAL_MEAN = float(train_df["remaining_time"].mean()) if len(train_df) else 0.0
+GLOBAL_MEAN = float(train_df["remaining_time_days"].mean()) if len(train_df) else 0.0
 wandb.log({"global_mean_days_train": GLOBAL_MEAN})
 
 # %% Model selection: choose n minimizing validation MAE
@@ -114,7 +117,7 @@ best_n = None
 best_val_mae = np.inf
 best_levels = None
 
-y_true_val = val_df["remaining_time"].to_numpy(dtype=float)
+y_true_val = val_df["remaining_time_days"].to_numpy(dtype=float)
 for n in config["n_values"]:
     lvls = fit_ngram_rt(train_df, n=n, min_count=config["min_count"])
     y_pred_val = np.array(
@@ -135,7 +138,7 @@ k_vals, counts, maes, mses, rmses = [], [], [], [], []
 
 for k in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == k]
-    y_true = subset["remaining_time"].to_numpy(dtype=float)
+    y_true = subset["remaining_time_days"].to_numpy(dtype=float)
     y_pred = np.array(
         [predict_remaining(to_tokens(p), best_levels, best_n, GLOBAL_MEAN) for p in subset["prefix"]],
         dtype=float
@@ -201,7 +204,7 @@ wandb.log({
 
 # %% Global scatter + error histogram (days)
 if len(test_df):
-    y_true_all = test_df["remaining_time"].to_numpy(dtype=float)
+    y_true_all = test_df["remaining_time_days"].to_numpy(dtype=float)
     y_pred_all = np.array(
         [predict_remaining(to_tokens(p), best_levels, best_n, GLOBAL_MEAN) for p in test_df["prefix"]],
         dtype=float
@@ -224,7 +227,7 @@ s_table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","a
 for _, r in sample.iterrows():
     tokens = to_tokens(r["prefix"])
     pred = float(predict_remaining(tokens, best_levels, best_n, GLOBAL_MEAN))
-    gold = float(r["remaining_time"])
+    gold = float(r["remaining_time_days"])
     prefix_pretty = " → ".join(tokens)
     print("Prefix:", prefix_pretty)
     print(f"Gold (days): {gold:.2f}")

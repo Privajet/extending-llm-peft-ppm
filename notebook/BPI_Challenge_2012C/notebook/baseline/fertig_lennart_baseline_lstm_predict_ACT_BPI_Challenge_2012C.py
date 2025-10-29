@@ -49,22 +49,24 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %%
+DATASET = "BPI_Challenge_2012C"
+
 config = {
     # bookkeeping
-    "dataset":                  "BPI_Challenge_2012C",
-    "checkpoint_path":          "/tmp/best_lstm_act_BPI_Challenge_2012C.weights.h5",
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_lstm_act_{DATASET}.weights.h5",
     "monitor_metric":           "val_sparse_categorical_accuracy",
     "monitor_mode":             "max",
     # optimization
     "learning_rate":            3e-4,       # 5e-4 → 3e-4 20.09.
-    "batch_size":               12,
+    "batch_size":               128,
     "epochs":                   100,
     # model scale / regularization
     "embed_dim":                256,        # 64 → 256 20.09.
     "lstm_units_1":             256,        # 128 → 256 20.09.
     "lstm_units_2":             128,        # 64 → 128 20.09.
     "dropout":                  0.30,       # 0.0 → 0.3 20.09
-    "recurrent_dropout":        0.00,
+    # "recurrent_dropout":        0.00,
     "l2":                       1e-5,       # 1e-4 → 1e-5 20.09.
     "clipnorm":                 1.0
 }
@@ -112,11 +114,11 @@ layers = [
         config["lstm_units_1"],
         return_sequences=(config["lstm_units_2"] > 0),
         dropout=config["dropout"],
-        recurrent_dropout=config["recurrent_dropout"],
+        # recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
-        use_cudnn=False
+        use_cudnn=True
     ),
     Dropout(config["dropout"])
 ]
@@ -126,11 +128,11 @@ if config["lstm_units_2"] > 0:
         LSTM(
             config["lstm_units_2"],
             dropout=config["dropout"],
-            recurrent_dropout=config["recurrent_dropout"],
+            # recurrent_dropout=config["recurrent_dropout"],
             kernel_regularizer=l2(config["l2"]),
             recurrent_regularizer=l2(config["l2"]),
             recurrent_initializer="orthogonal",
-            use_cudnn=False
+            use_cudnn=True
         ),
         Dropout(config["dropout"])
     ]

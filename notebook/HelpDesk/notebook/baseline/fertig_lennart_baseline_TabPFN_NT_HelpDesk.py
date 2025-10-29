@@ -52,12 +52,12 @@ print("Using device:", DEVICE)
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
-# %%
+# %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "monitor_metric":           "val_loss",
-    "monitor_mode":             "min",
+    "dataset":                  DATASET,
     # model scale
     "sample_size":              10000,  # downsample train for speed/stability; set None to disable
 }

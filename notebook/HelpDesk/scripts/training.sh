@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=HelpDesk_RT_TabPFN_training
+#SBATCH --job-name=HelpDesk_ACT_LSTM_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -54,7 +54,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_ngram_RT_HelpDesk.py
 
 # LSTM:
-# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_HelpDesk.py
+srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_NT_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_RT_HelpDesk.py
 
@@ -66,7 +66,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # TabPFN:
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_TabPFN_NT_HelpDesk.py
-srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_HelpDesk.py
+# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_HelpDesk.py
 
 # GPT-Neo-1.3B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_HelpDesk.py

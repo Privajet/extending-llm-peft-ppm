@@ -57,13 +57,12 @@ print("Using device:", DEVICE)
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
-# %% 
+# %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "checkpoint_path":          "/tmp/best_tabpfn_act_HelpDesk.weights.h5",
-    "monitor_metric":           "val_sparse_categorical_accuracy",
-    "monitor_mode":             "max",
+    "dataset":                  DATASET,
     # model scale
     "sample_size":              10000,  # downsample train for speed/stability; set None to disable
 }
@@ -270,7 +269,7 @@ table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "t
 for _, r in sample.iterrows():
     prefix_str = str(r["prefix"])
     prefix_tokens = prefix_str.split()
-    pred, top5, p_pred, top5_p = predict_next(prefix_tokens, topk=5)
+    pred, top5, p_pred, top5_p = predict_next(prefix_str, topk=5)
     
     gold = str(r["next_act"])
     prefix_pretty = " → ".join(prefix_tokens)

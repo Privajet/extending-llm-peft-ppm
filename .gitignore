@@ -14,15 +14,14 @@ lightning_logs/
 runs/
 
 # Data files (adjust as needed)
-data/
 external/
 models/
 logs/
 achieve/
 src/
 skpm/
-*.csv
-*.csv.gz
+# *.csv
+# *.csv.gz
 *.parquet
 *.npz
 *.npy

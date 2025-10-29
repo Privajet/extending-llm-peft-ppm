@@ -1,4 +1,4 @@
-# %% ProcessTransformer — Remaining-Time (RT) prediction on HelpDesk
+# %% ProcessTransformer — Remaining-Time (RT) prediction
 # - Temporal split by case start (aligned with your ACT/LSTM scripts)
 # - For each prefix of length k (k=1..n-1), target is remaining time to case end (in days)
 # - Token+Position embedding → (1–2) Transformer blocks → masked average → Dense(1)
@@ -45,10 +45,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "checkpoint_path":          "/tmp/best_transformer_rt_HelpDesk.weights.h5",
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_transformer_rt_{DATASET}.weights.h5",
     "monitor_metric":           "val_loss",
     "monitor_mode":             "min",
     # optimization

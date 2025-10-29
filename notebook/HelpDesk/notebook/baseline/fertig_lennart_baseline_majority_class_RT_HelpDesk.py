@@ -1,4 +1,4 @@
-# %% Majority (global-mean/median) baseline — Remaining Time (RT) on HelpDesk
+# %% Majority (global-mean/median) baseline — Remaining Time (RT)
 # - Temporal split by case start (same splits as your other scripts)
 # - For each prefix of length k, RT_k = t_end - t_{k-1} in days
 # - Predict a single constant (mean/median) RT computed on TRAIN
@@ -35,9 +35,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":          "HelpDesk",
-    "constant_choice":  "median"  # or "mean"
+    # bookkeeping
+    "dataset":                  DATASET,
+    "constant_choice":          "median"  # or "mean"
 }
 
 # %%

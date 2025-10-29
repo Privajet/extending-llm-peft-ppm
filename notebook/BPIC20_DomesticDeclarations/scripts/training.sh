@@ -12,15 +12,12 @@
 
 set -euo pipefail
 
-# Caches & Logging
-export HF_HOME="$SLURM_SUBMIT_DIR/.cache/huggingface"
+# Caches & Logging (workdir)
+export HF_HOME="$PWD/.cache/huggingface"
 export TRANSFORMERS_CACHE="$HF_HOME/transformers"
+export WANDB_DIR="$PWD/.wandb"
 export TOKENIZERS_PARALLELISM=false
-export WANDB_DIR="$SLURM_SUBMIT_DIR/.wandb"
-
-# Immer aus dem Submit-Verzeichnis starten
-cd "$SLURM_SUBMIT_DIR"
-mkdir -p logs .wandb .cache/huggingface
+mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" "$WANDB_DIR" logs
 
 # Conda initialisieren und Env aktivieren
 eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
@@ -28,11 +25,17 @@ eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 # >>> HIER die gewünschte Env wählen <<<
 ENV_NAME=${ENV_NAME:-thesis-baselines}
 # ENV_NAME=${ENV_NAME:-thesis-llm}
+# ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
 conda activate "$ENV_NAME"
 
 # Threads
+export PYTHONPATH="/ceph/lfertig/Thesis:${PYTHONPATH:-}"
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
+# Faster HF downloads (if available on your cluster)
+export HF_HUB_ENABLE_HF_TRANSFER=1
+# Better CUDA memory behavior on PyTorch 2.x
+export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
 
 # GPU Info (optional)
 nvidia-smi || true

@@ -1,8 +1,28 @@
-# %% LSTM baseline — Remaining Time (RT) prediction on P2P
+# %% LSTM — Remaining-Time (RT) prediction
+# - Temporal split by case start (uses processed splits from `data.loader`)
+# - Inputs: tokenized activity prefixes (pre-padded to max_case_length) + 3 time features
+#   (recent_time, latest_time, time_passed), each standardized with train-fitted scalers
+# - Model: Token Embedding → (1–2) LSTM layers → Dropout
+#          + small MLP on time features → Concatenate → Dense(1) (prediction in standardized space)
+# - Target: next_time standardized (StandardScaler); train with LogCosh loss
+# - Reporting: inverse-transform predictions/labels to days → MAE / MSE / RMSE (days)
+# - Evaluation: per-k curves + macro averages; global scatter & error histogram; sample preds
+# - Training: Adam(clipnorm), val_loss checkpointing, EarlyStopping, ReduceLROnPlateau
+# - Logging/plots: W&B logging + headless matplotlib; fixed seeds for reproducibility
 
-import os
+import os, sys, random, glob, ctypes
 os.environ["MPLBACKEND"] = "Agg"  # headless matplotlib
 
+# Preload libstdc++ on some HPC stacks (no-op if not needed)
+prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
+cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
+if cands:
+    try:
+        mode = getattr(ctypes, "RTLD_GLOBAL", 0)  # ← use ctypes, not os
+        ctypes.CDLL(cands[0], mode=mode)
+    except OSError:
+        pass
+    
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -14,225 +34,206 @@ from datetime import datetime
 import wandb
 from wandb.integration.keras import WandbMetricsLogger
 
-from tensorflow.keras.models import Sequential
+from tensorflow.keras import Input, Model
+from tensorflow.keras.layers import Concatenate
 from tensorflow.keras.layers import Embedding, LSTM, Dense, Dropout
 from tensorflow.keras.optimizers import Adam
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.regularizers import l2
 
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 from sklearn import metrics
+
+# Data Pipeline
+from data import loader
+from data.constants import Task
 
 # %% W&B
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
-# %% Config (same style as your NT)
+# %% Config
+DATASET = "P2P"
+
 config = {
-    "learning_rate": 5e-4,
-    "batch_size":    32,
-    "epochs":        90,
-    "embedding_dim": 64,
-    "lstm_units_1":  128,
-    "lstm_units_2":  64,     # set 0 to disable 2nd LSTM
-    "dropout":       0.20,
-    "l2":            1e-5,
-    "clipnorm":      1.0,
-    "use_huber":     False,   # True -> Huber(delta=0.25), False -> MSE
-    "scale_range":   (-1, 1)
+    # bookkeeping
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_lstm_rt_{DATASET}.weights.h5",
+    "monitor_metric":           "val_loss",
+    "monitor_mode":             "min",
+    # optimization
+    "learning_rate":            3e-4, 
+    "clipnorm":                 1.0,
+    "early_stop_patience":      7,
+    "batch_size":               64,
+    "epochs":                   90,
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
+    # model scale
+    "embed_dim":                256,
+    "lstm_units_1":             256,        # 128 → 256 (20.09.)
+    "lstm_units_2":             128,        # 64 → 128 (20.09.)
+    "dropout":                  0.30,       # 0.20 → 0.30 (20.09.)
+    "recurrent_dropout":        0.10,       # added (20.09.)
+    "l2":                       1e-5,
 }
 
-# %% Init W&B
+# %%
+config["seed"] = 42
+tf.keras.utils.set_random_seed(config["seed"])
+tf.config.experimental.enable_op_determinism()
+random.seed(config["seed"])
+np.random.seed(config["seed"])
+
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
-    project="baseline_lstm_RT_P2P",
+    project=f"baseline_lstm_RT_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"lstm_rt_{ts}",
     config=config
 )
 
-CKPT_PATH = "/tmp/best_lstm_rt_P2P.weights.h5"
-os.makedirs(os.path.dirname(CKPT_PATH), exist_ok=True)
-
 # %% Data
-df = pd.read_csv("/ceph/lfertig/Thesis/data/processed/df_p2p.csv.gz")
-df["time:timestamp"] = pd.to_datetime(df["time:timestamp"])
-df = df.sort_values(by=["case:concept:name", "time:timestamp"]).reset_index(drop=True)
+data_loader = loader.LogsDataLoader(name=config['dataset'])
 
-# Build RT prefixes:
-# For case events e_0..e_{n-1}, for i in 1..n-1:
-#   prefix = acts[:i]
-#   remaining_time (days) = t_{n-1} - t_{i-1}
-rows = []
-for case_id, g in df.groupby("case:concept:name", sort=False):
-    acts  = g["concept:name"].tolist()
-    times = g["time:timestamp"].tolist()
-    if len(acts) < 2:
-        continue
-    case_end = times[-1]
-    for i in range(1, len(acts)):
-        rows.append({
-            "case_id": case_id,
-            "prefix": acts[:i],
-            "remaining_time": (case_end - times[i-1]).total_seconds() / 86400.0, # days
-            "k": i
-        })
-rt_df = pd.DataFrame(rows)
+(train_df, test_df, val_df,
+ x_word_dict, y_word_dict,
+ max_case_length, vocab_size,
+ num_output) = data_loader.load_data(task=Task.REMAINING_TIME)
 
-# Temporal split by case start (same as NT)
-case_start = (
-    df.groupby("case:concept:name")["time:timestamp"]
-      .min().reset_index().sort_values("time:timestamp")
-)
-case_ids = case_start["case:concept:name"].tolist()
-
-n_total = len(case_ids)
-n_train = int(n_total * 0.8)
-n_val   = int(n_train * 0.2)
-
-train_ids = case_ids[:n_train - n_val]
-val_ids   = case_ids[n_train - n_val:n_train]
-test_ids  = case_ids[n_train:]
-
-train_df = rt_df[rt_df["case_id"].isin(train_ids)].reset_index(drop=True)
-val_df   = rt_df[rt_df["case_id"].isin(val_ids)].reset_index(drop=True)
-test_df  = rt_df[rt_df["case_id"].isin(test_ids)].reset_index(drop=True)
-
-print(f"Train prefixes: {len(train_df)} - Val: {len(val_df)} - Test: {len(test_df)}")
 wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)})
 
-# %% Encode activities + pad
-le = LabelEncoder().fit(df["concept:name"])
-PAD_ID = 0
-def encode_seq(seq): return le.transform(seq) + 1  # keep 0 for PAD
+(train_tok_x, train_time_x, train_y, time_scaler, y_scaler) = data_loader.prepare_data_remaining_time(train_df, x_word_dict, max_case_length)
+(val_tok_x, val_time_x, val_y, _, _) = data_loader.prepare_data_remaining_time(val_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
+(test_tok_x, test_time_x, test_y, _, _) = data_loader.prepare_data_remaining_time(test_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
 
-maxlen = int(rt_df["k"].max()) if len(rt_df) else 0
+# %% Inputs
+tok_in  = Input(shape=(max_case_length,), name="tokens")
+time_in = Input(shape=(3,), name="time_feats")
 
-# Scale y to [-1,1] (invert for metrics)
-def prepare_data(frame, scaler=None, fit_scaler=True):
-    X = [encode_seq(p) for p in frame["prefix"]]
-    X = pad_sequences(X, maxlen=maxlen, padding="post", value=PAD_ID)  # right-pad
-    y = frame["remaining_time"].values.reshape(-1, 1)
-    if fit_scaler:
-        scaler = MinMaxScaler(feature_range=config["scale_range"])
-        y_scaled = scaler.fit_transform(y)
-        return X, y_scaled, scaler
-    else:
-        y_scaled = scaler.transform(y)
-        return X, y_scaled
+x = Embedding(
+    input_dim=vocab_size, 
+    output_dim=config["embed_dim"], 
+    mask_zero=True
+)(tok_in)
 
-X_train, y_train, scaler = prepare_data(train_df, fit_scaler=True)
-X_val,   y_val           = prepare_data(val_df,   scaler=scaler, fit_scaler=False)
-X_test,  y_test          = prepare_data(test_df,  scaler=scaler, fit_scaler=False)
-
-# %% Model (same as NT)
-layers = [
-    Embedding(
-        input_dim=len(le.classes_) + 1,  # +1 for PAD
-        output_dim=config["embedding_dim"],
-        input_length=maxlen,
-        mask_zero=True
-    ),
-    LSTM(
-        config["lstm_units_1"],
-        return_sequences=(config["lstm_units_2"] > 0),
-        dropout=config["dropout"],
-        recurrent_dropout=0.0,
-        kernel_regularizer=l2(config["l2"]),
-        recurrent_regularizer=l2(config["l2"])
-    ),
-    Dropout(config["dropout"])
-]
+x = LSTM(
+    config["lstm_units_1"],
+    return_sequences=(config["lstm_units_2"] > 0),
+    dropout=config["dropout"],
+    recurrent_dropout=config["recurrent_dropout"],
+    kernel_regularizer=l2(config["l2"]),
+    recurrent_initializer="orthogonal",
+    recurrent_regularizer=l2(config["l2"])
+)(x)
+x = Dropout(config["dropout"])(x)
 
 if config["lstm_units_2"] > 0:
-    layers += [
-        LSTM(
-            config["lstm_units_2"],
-            dropout=config["dropout"],
-            recurrent_dropout=0.0,
-            kernel_regularizer=l2(config["l2"]),
-            recurrent_regularizer=l2(config["l2"])
-        ),
-        Dropout(config["dropout"])
-    ]
+    x = LSTM(
+        config["lstm_units_2"],
+        dropout=config["dropout"],
+        recurrent_dropout=config["recurrent_dropout"],
+        kernel_regularizer=l2(config["l2"]),
+        recurrent_initializer="orthogonal",
+        recurrent_regularizer=l2(config["l2"])
+    )(x)
+    x = Dropout(config["dropout"])(x)
 
-layers += [Dense(1, activation="linear")]
-model = Sequential(layers)
+# small MLP for time features
+t = Dense(32, activation="relu", kernel_regularizer=l2(config["l2"]))(time_in)
 
-optimizer = Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"])
-loss = (tf.keras.losses.Huber(delta=0.25) if config["use_huber"] else "mse")
+# fuse
+h = Concatenate()([x, t])
+h = Dense(64, activation="relu", kernel_regularizer=l2(config["l2"]))(h)
+h = Dropout(config["dropout"])(h)
+out = Dense(1, activation="linear")(h)
+
+# %% Model
+model = Model(inputs=[tok_in, time_in], outputs=out)
 
 model.compile(
-    optimizer=optimizer,
-    loss=loss,
+    optimizer=Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]), 
+    loss=tf.keras.losses.LogCosh(),
     metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")]
 )
 
 # %% Callbacks
 checkpoint_cb = ModelCheckpoint(
-    filepath=CKPT_PATH,
+    config["checkpoint_path"],
     save_weights_only=True,
-    monitor="val_mae",
+    monitor=config["monitor_metric"],
     save_best_only=True,
-    mode="min",
+    mode=config["monitor_mode"],
     verbose=1
 )
 early_stop = EarlyStopping(
-    monitor="val_mae",
-    patience=7,
+    monitor=config["monitor_metric"],
+    patience=config["early_stop_patience"],
     restore_best_weights=True,
     verbose=1
 )
 reduce_lr = ReduceLROnPlateau(
-    monitor="val_mae",
-    factor=0.5,
-    patience=3,
-    min_lr=1e-6,
+    monitor=config["monitor_metric"],
+    factor=config["reduce_lr_factor"],
+    patience=config["reduce_lr_patience"],
+    min_lr=config["min_lr"], 
     verbose=1
 )
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
+    [train_tok_x, train_time_x], train_y,
+    validation_data=([val_tok_x, val_time_x], val_y),
     epochs=config["epochs"],
     batch_size=config["batch_size"],
     callbacks=[checkpoint_cb, early_stop, reduce_lr, WandbMetricsLogger()],
     verbose=2
 )
 
-# Safety: ensure checkpoint exists then load best
-if not os.path.exists(CKPT_PATH):
-    model.save_weights(CKPT_PATH)
-model.load_weights(CKPT_PATH)
-
-# %% Inference helper (days)
-def predict_remaining_days(prefix_tokens):
-    x = pad_sequences([encode_seq(prefix_tokens)], maxlen=maxlen, padding="post", value=PAD_ID)
-    y_scaled = model.predict(x, verbose=0)[0, 0]
-    return float(scaler.inverse_transform([[y_scaled]])[0, 0])
+# %% Inference helper (return days)
+def predict_remaining_days(prefix_str: str, recent_time=0.0, latest_time=0.0, time_passed=0.0) -> float:
+    df1 = pd.DataFrame([{
+        "prefix": prefix_str,
+        "recent_time": float(recent_time),
+        "latest_time": float(latest_time),
+        "time_passed": float(time_passed),
+        "k": 0
+    }])
+    tok_x, time_x, _, _, _ = data_loader.prepare_data_remaining_time(
+        df1, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    y_scaled = model.predict([tok_x, time_x], verbose=0)
+    y_days = float(y_scaler.inverse_transform(y_scaled)[0, 0])
+    return max(0.0, y_days)
 
 # %% Per-k evaluation (days)
-k_vals, counts = [], []
-maes, mses, rmses = [], [], []
+k_vals, counts, maes, mses, rmses = [], [], [], [], []
 
-for k in range(1, maxlen + 1):
+for k in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == k]
     if subset.empty:
         continue
 
-    X_t = pad_sequences([encode_seq(p) for p in subset["prefix"]], maxlen=maxlen, padding="post", value=PAD_ID)
-    y_true = subset["remaining_time"].values.reshape(-1, 1)
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_remaining_time(
+        subset, x_word_dict, max_case_length, 
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
 
-    y_pred_scaled = model.predict(X_t, verbose=0)
-    y_pred = scaler.inverse_transform(y_pred_scaled)
+    y_pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    y_true_days   = y_scaler.inverse_transform(sub_y)
+    y_pred_days   = y_scaler.inverse_transform(y_pred_scaled)
 
-    k_vals.append(k); counts.append(len(subset))
-    mae  = metrics.mean_absolute_error(y_true, y_pred)
-    mse  = metrics.mean_squared_error(y_true, y_pred)
+    mae  = metrics.mean_absolute_error(y_true_days, y_pred_days)
+    mse  = metrics.mean_squared_error(y_true_days, y_pred_days)
     rmse = float(np.sqrt(mse))
+
+    k_vals.append(k)
+    counts.append(len(subset))
     maes.append(mae); mses.append(mse); rmses.append(rmse)
 
+# Macro averages across k-bins
 avg_mae  = float(np.mean(maes))  if maes  else float("nan")
 avg_mse  = float(np.mean(mses))  if mses  else float("nan")
 avg_rmse = float(np.mean(rmses)) if rmses else float("nan")
@@ -242,43 +243,51 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = "/ceph/lfertig/Thesis/notebook/P2P/plots/Baselines/LSTM/RT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/RT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history
 
+# Training loss (log-space)
 plt.figure(figsize=(8,5))
-plt.plot(h["loss"], label="Train Loss")
-plt.plot(h["val_loss"], label="Val Loss")
-plt.title("Loss over Epochs"); plt.xlabel("Epoch"); plt.ylabel("MSE/Huber (scaled)")
+plt.plot(h["loss"], label="Train")
+plt.plot(h["val_loss"], label="Validation")
+plt.title("Loss over Epochs (log-space)")
+plt.xlabel("Epoch"); plt.ylabel("Loss (Huber/MSE in log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"loss_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"loss_logspace_{ts}.png"), dpi=150); plt.close()
 
+# Training MAE (log-space)
 plt.figure(figsize=(8,5))
-plt.plot(h["mae"], label="Train MAE (scaled)")
-plt.plot(h["val_mae"], label="Val MAE (scaled)")
-plt.title("MAE over Epochs"); plt.xlabel("Epoch"); plt.ylabel("MAE (scaled)")
+plt.plot(h["mae"], label="Train MAE (log-space)")
+plt.plot(h["val_mae"], label="Val MAE (log-space)")
+plt.title("MAE over Epochs (log-space)")
+plt.xlabel("Epoch"); plt.ylabel("MAE (log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"mae_scaled_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"mae_logspace_{ts}.png"), dpi=150); plt.close()
 
+# Per-k curves in days
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, maes, marker='o', label='MAE (days)')
-    plt.title('MAE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MAE (days)')
+    plt.title("MAE vs. Prefix Length k")
+    plt.xlabel("Prefix Length (k)"); plt.ylabel("MAE (days)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"mae_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(plot_dir, f"mae_vs_k_days_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, rmses, marker='o', label='RMSE (days)')
-    plt.title('RMSE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('RMSE (days)')
+    plt.title("RMSE vs. Prefix Length k")
+    plt.xlabel("Prefix Length (k)"); plt.ylabel("RMSE (days)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"rmse_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(plot_dir, f"rmse_vs_k_days_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, mses, marker='o', label='MSE (days^2)')
-    plt.title('MSE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MSE')
+    plt.title("MSE vs. Prefix Length k")
+    plt.xlabel("Prefix Length (k)"); plt.ylabel("MSE (days^2)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"mse_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(plot_dir, f"mse_vs_k_days_{ts}.png"), dpi=150); plt.close()
 
 print(f"Saved plots to: {plot_dir}")
 
@@ -295,13 +304,13 @@ wandb.log({
 })
 
 # %% Global scatter + error histogram (days)
-X_all = pad_sequences([encode_seq(p) for p in test_df["prefix"]], maxlen=maxlen, padding="post", value=PAD_ID)
-y_true_all = test_df["remaining_time"].values.reshape(-1, 1)
-y_pred_all = scaler.inverse_transform(model.predict(X_all, verbose=0))
-abs_err = np.abs(y_true_all - y_pred_all).reshape(-1)
+y_pred_scaled_all = model.predict([test_tok_x, test_time_x], verbose=0)
+y_true_all_days   = y_scaler.inverse_transform(test_y)
+y_pred_all_days   = y_scaler.inverse_transform(y_pred_scaled_all)
+abs_err = np.abs(y_true_all_days - y_pred_all_days).reshape(-1)
 
 tab = wandb.Table(
-    data=[[float(y_true_all[i,0]), float(y_pred_all[i,0]), float(abs_err[i])] for i in range(len(abs_err))],
+    data=[[float(y_true_all_days[i,0]), float(y_pred_all_days[i,0]), float(abs_err[i])] for i in range(len(abs_err))],
     columns=["true_days", "pred_days", "abs_err_days"]
 )
 wandb.log({
@@ -311,19 +320,27 @@ wandb.log({
 
 # %% Sample predictions (days)
 sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
-s_table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+
 for _, r in sample.iterrows():
-    pred = predict_remaining_days(r["prefix"])
-    gold = float(r["remaining_time"])
-    s_table.add_data(r["case_id"], r["k"], " → ".join(r["prefix"]), gold, pred, abs(gold - pred))
-    print("Prefix:", " → ".join(r["prefix"]))
-    print(f"Gold (days): {gold:.2f} | Pred (days): {pred:.2f} | Abs err: {abs(gold - pred):.2f}")
+    # One-row DF, reuse scalers to get the exact same preprocessing
+    sub = r.to_frame().T
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_remaining_time(
+        sub, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    gold_days = float(y_scaler.inverse_transform(sub_y)[0, 0])
+    pred_days = float(y_scaler.inverse_transform(pred_scaled)[0, 0])
+    table.add_data(r["case_id"], int(r["k"]), r["prefix"], gold_days, pred_days, abs(gold_days - pred_days))
+    print("Prefix:", " → ".join(r["prefix"].split() if isinstance(r["prefix"], str) else r["prefix"]))
+    print(f"Gold (days): {gold_days:.2f} | Pred (days): {pred_days:.2f} | Abs err: {abs(gold_days - pred_days):.2f}")
     print("-"*60)
-wandb.log({"samples": s_table})
+    
+wandb.log({"samples": table})
 
 # %% Save checkpoint as W&B artifact
-artifact = wandb.Artifact("lstm_rt_model_bpi2012c", type="model")
-artifact.add_file(CKPT_PATH)
+artifact = wandb.Artifact(f"lstm_rt_model_{config['dataset']}", type="model")
+artifact.add_file(config["checkpoint_path"])
 run.log_artifact(artifact)
 
 # %%

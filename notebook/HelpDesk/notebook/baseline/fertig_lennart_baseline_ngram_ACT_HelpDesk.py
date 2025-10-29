@@ -33,9 +33,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
-    "dataset":  "HelpDesk",
-    "n_values": [2, 3, 4, 5, 6, 7, 8],  # candidate n for validation
+    # bookkeeping
+    "dataset":                  DATASET,
+    "n_values":                 [2, 3, 4, 5, 6, 7, 8],  # candidate n for validation
 }
 
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")

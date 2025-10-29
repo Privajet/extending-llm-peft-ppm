@@ -1,13 +1,23 @@
-# %% ProcessTransformer — Next-Time (NT) prediction on BPIC20_DomesticDeclarations
-# - Temporal split by case start (aligned with your ACT/PT & LSTM baselines)
+# %% ProcessTransformer — Next-Time (NT) prediction
+# - Temporal split by case start
 # - Prefix of length k predicts Δt_k = t_k - t_{k-1} in days
 # - Token+Position embedding → (1–2) Transformer blocks → masked average → Dense(1)
-# - Targets scaled to [-1, 1] for stability; metrics reported in days
+# - Targets trained in log-space via log1p(days); metrics reported in days
 # - W&B logging + headless matplotlib plots
 
-import os
+import os, sys, random, glob, ctypes
 os.environ["MPLBACKEND"] = "Agg"  # headless matplotlib
 
+# Preload libstdc++ on some HPC stacks (no-op if not needed)
+prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
+cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
+if cands:
+    try:
+        mode = getattr(ctypes, "RTLD_GLOBAL", 0)  # ← use ctypes, not os
+        ctypes.CDLL(cands[0], mode=mode)
+    except OSError:
+        pass
+    
 import numpy as np
 import pandas as pd
 import tensorflow as tf
@@ -20,37 +30,55 @@ import wandb
 from wandb.integration.keras import WandbMetricsLogger
 
 from sklearn import metrics
-from sklearn.preprocessing import LabelEncoder, MinMaxScaler
 
 from tensorflow.keras import layers
-from tensorflow.keras.preprocessing.sequence import pad_sequences
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 
-# ProcessTransformer
-from data.models import transformer
+# Data Pipeline + Model
+from models import transformer
+from data import loader
+from data.constants import Task
 
 # %% W&B
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
-# %% Config (safe defaults; tweak as needed)
+# %% Config
+DATASET = "BPIC20_DomesticDeclarations"
+
 config = {
-  "learning_rate": 5e-4,
-  "batch_size":    32,
-  "epochs":        80,
-  "embed_dim":     64,     # divisible by num_heads
-  "num_heads":     8,      # 64/8 = 8 per head
-  "ff_dim":        256,    # ~4× embed_dim
-  "clipnorm":      1.0,
-  "use_huber":     False,  # True -> Huber(delta=0.25), False -> MSE
-  "scale_range":   (-1, 1),
-  "num_blocks":    2       # Transformer blocks stacked
+    # bookkeeping
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_transformer_nt_{DATASET}.weights.h5",
+    "monitor_metric":           "val_loss",
+    "monitor_mode":             "min",
+    # optimization
+    "learning_rate":            3e-4,
+    "clipnorm":                 1.0,
+    "batch_size":               64,
+    "epochs":                   90,
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
+    # model scale
+    "embed_dim":                256,      # try 256 if VRAM permits
+    "num_heads":                8,        # embed_dim % num_heads == 0
+    "ff_dim":                   512,      # 4x embed_dim (use 1024 for embed_dim=256)
 }
+
+# %%
+config["seed"] = 42
+tf.keras.utils.set_random_seed(config["seed"])
+tf.config.experimental.enable_op_determinism()
+random.seed(config["seed"])
+np.random.seed(config["seed"])
 
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
-    project="baseline_processTransformer_NT_BPIC20_DomesticDeclarations",
+    project=f"baseline_processTransformer_NT_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"transformer_nt_{ts}",
     config=config,
@@ -58,209 +86,114 @@ run = wandb.init(
     force=True
 )
 
-CKPT_PATH = "/tmp/best_transformer_nt_BPIC20_DomesticDeclarations.weights.h5"
-os.makedirs(os.path.dirname(CKPT_PATH), exist_ok=True)
-
 # %%
-df = pd.read_csv("/ceph/lfertig/Thesis/data/processed/df_bpic20_domestic.csv.gz")
-df["time:timestamp"] = pd.to_datetime(df["time:timestamp"])
-df = df.sort_values(by=["case:concept:name", "time:timestamp"]).reset_index(drop=True)
+data_loader = loader.LogsDataLoader(name=config['dataset'])
 
-# Build NT prefixes (1..n-1): target Δt_i = t_i − t_{i-1} in days
-rows = []
-for case_id, g in df.groupby("case:concept:name", sort=False):
-    acts  = g["concept:name"].tolist()
-    times = g["time:timestamp"].tolist()
-    for i in range(1, len(acts)):
-        rows.append({
-            "case_id": case_id,
-            "prefix": acts[:i],
-            "next_time_delta": (times[i] - times[i-1]).total_seconds() / 86400.0,
-            "k": i
-        })
-nt_df = pd.DataFrame(rows)
+(train_df, test_df, val_df, 
+ x_word_dict, y_word_dict, 
+ max_case_length, vocab_size,
+ num_output) = data_loader.load_data(task=Task.NEXT_TIME)
 
-# Temporal split by case start (same protocol as ACT)
-case_start = (
-    df.groupby("case:concept:name")["time:timestamp"]
-      .min().reset_index().sort_values("time:timestamp")
-)
-case_ids = case_start["case:concept:name"].tolist()
-
-n_total = len(case_ids)
-n_train = int(n_total * 0.8)
-n_val   = int(n_train * 0.2)
-
-train_ids = case_ids[: n_train - n_val]
-val_ids   = case_ids[n_train - n_val : n_train]
-test_ids  = case_ids[n_train : ]
-
-train_df = nt_df[nt_df["case_id"].isin(train_ids)].reset_index(drop=True)
-val_df   = nt_df[nt_df["case_id"].isin(val_ids)].reset_index(drop=True)
-test_df  = nt_df[nt_df["case_id"].isin(test_ids)].reset_index(drop=True)
-
-print(f"Train prefixes: {len(train_df)} - Val: {len(val_df)} - Test: {len(test_df)}")
 wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)})
 
-# %% Encode activities (+1 offset to keep PAD=0), right-pad sequences
-encoder = LabelEncoder().fit(df["concept:name"])
-PAD_ID = 0
-def enc(seq): return encoder.transform(seq) + 1
+(train_tok_x, train_time_x, train_y, time_scaler, y_scaler) = data_loader.prepare_data_next_time(train_df, x_word_dict, max_case_length)
+(val_tok_x, val_time_x, val_y, _, _) = data_loader.prepare_data_next_time(val_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
+(test_tok_x, test_time_x, test_y, _, _) = data_loader.prepare_data_next_time(test_df, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
 
-vocab_size = len(encoder.classes_) + 1   # +1 for PAD
-maxlen = int(nt_df["k"].max()) if len(nt_df) else 0
-
-# Scale y to [-1,1] for stability; invert for metrics
-def prepare_data(frame, scaler=None, fit_scaler=True):
-    X = [enc(p) for p in frame["prefix"]]
-    X = pad_sequences(X, maxlen=maxlen, padding="post", value=PAD_ID).astype("int32")  # post-pad
-    y = frame["next_time_delta"].values.reshape(-1, 1)
-    if fit_scaler:
-        scaler = MinMaxScaler(feature_range=config["scale_range"])
-        y_scaled = scaler.fit_transform(y)
-        return X, y_scaled, scaler
-    else:
-        y_scaled = scaler.transform(y)
-        return X, y_scaled
-
-X_train, y_train, scaler = prepare_data(train_df, fit_scaler=True)
-X_val,   y_val           = prepare_data(val_df,   scaler=scaler, fit_scaler=False)
-X_test,  y_test          = prepare_data(test_df,  scaler=scaler, fit_scaler=False)
-
-# %% Layers for masking PADs (PAD=0)
-class PatchedTransformerBlock(layers.Layer):
-    def __init__(self, embed_dim, num_heads, ff_dim, rate=0.1):
-        super().__init__()
-        self.block = transformer.TransformerBlock(embed_dim, num_heads, ff_dim, rate)
-    def call(self, inputs, training=False):
-        return self.block(inputs, training=training)
-
-class PadMask(layers.Layer):
-    """Return mask (B,L,1) where 1=token, 0=PAD(=0)."""
-    def call(self, inputs):
-        m = tf.cast(tf.not_equal(inputs, 0), tf.float32)
-        return tf.expand_dims(m, axis=-1)
-
-class MaskedAverage(layers.Layer):
-    """Masked average over time: sum(x*mask)/sum(mask)."""
-    def call(self, inputs):
-        x, mask = inputs  # x: (B,L,D), mask: (B,L,1)
-        x = x * mask
-        sum_x = tf.reduce_sum(x, axis=1)                         # (B, D)
-        denom = tf.clip_by_value(tf.reduce_sum(mask, axis=1), 1e-6, 1e9)  # (B,1)
-        return sum_x / denom                                     # (B, D)
-
-# %% Model (regression head)
-def get_next_time_model(max_case_length, vocab_size, embed_dim, num_heads, ff_dim, num_blocks=2):
-    inp = layers.Input(shape=(max_case_length,), dtype="int32")
-
-    # Token + position embeddings
-    x = transformer.TokenAndPositionEmbedding(max_case_length, vocab_size, embed_dim)(inp)
-
-    # PAD mask & zero-pad embeddings before attention
-    mask = PadMask(name="pad_mask")(inp)                         # (B,L,1)
-    x = layers.Multiply(name="mask_before_attn")([x, mask])
-
-    # Stacked transformer blocks
-    for i in range(num_blocks):
-        x = PatchedTransformerBlock(embed_dim, num_heads, ff_dim, rate=0.1)(x)
-
-    # Re-apply mask & masked average pooling
-    x = layers.Multiply(name="mask_after_attn")([x, mask])
-    x = MaskedAverage(name="masked_avg")([x, mask])              # (B,D)
-
-    # Head
-    x = layers.Dropout(0.1)(x)
-    x = layers.Dense(128, activation="relu")(x)
-    x = layers.Dropout(0.1)(x)
-    out = layers.Dense(1, activation="linear")(x)                # scaled target
-
-    return tf.keras.Model(inputs=inp, outputs=out, name="next_time_transformer")
-
-model = get_next_time_model(
-    max_case_length=maxlen,
+# %% Model
+model = transformer.get_next_time_model(
+    max_case_length=max_case_length,
     vocab_size=vocab_size,
     embed_dim=config["embed_dim"],
     num_heads=config["num_heads"],
-    ff_dim=config["ff_dim"],
-    num_blocks=config["num_blocks"]
+    ff_dim=config["ff_dim"]
 )
 
-optimizer = Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"])
-loss = (tf.keras.losses.Huber(delta=0.25) if config["use_huber"] else "mse")
-
 model.compile(
-    optimizer=optimizer,
-    loss=loss,
+    optimizer=tf.keras.optimizers.Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]),
+    loss=tf.keras.losses.LogCosh(),
     metrics=[tf.keras.metrics.MeanAbsoluteError(name="mae")]
 )
 
-# %% Callbacks (monitor val_mae on scaled targets — days reported below)
+# %% Callbacks
 checkpoint_cb = ModelCheckpoint(
-    filepath=CKPT_PATH,
-    save_weights_only=True,
-    monitor="val_mae",
-    save_best_only=True,
-    mode="min",
+    filepath=config["checkpoint_path"], 
+    save_weights_only=True, 
+    monitor=config["monitor_metric"], 
+    save_best_only=True, 
+    mode=config["monitor_mode"], 
     verbose=1
 )
 early_stop = EarlyStopping(
-    monitor="val_mae",
-    patience=7,
-    restore_best_weights=True,
+    monitor=config["monitor_metric"], 
+    patience=config["early_stop_patience"], 
+    restore_best_weights=True, 
+    mode=config["monitor_mode"], 
     verbose=1
 )
 reduce_lr = ReduceLROnPlateau(
-    monitor="val_mae",
-    factor=0.5,
-    patience=3,
-    min_lr=1e-6,
+    monitor=config["monitor_metric"], 
+    factor=config["reduce_lr_factor"], 
+    patience=config["reduce_lr_patience"], 
+    min_lr=config["min_lr"], 
+    mode=config["monitor_mode"], 
     verbose=1
 )
 
 history = model.fit(
-    X_train, y_train,
-    validation_data=(X_val, y_val),
+    [train_tok_x, train_time_x], train_y,
+    validation_data=([val_tok_x, val_time_x], val_y),
     epochs=config["epochs"],
     batch_size=config["batch_size"],
     callbacks=[checkpoint_cb, early_stop, reduce_lr, WandbMetricsLogger()],
     verbose=2
 )
 
-# Safety: ensure checkpoint exists then load best
-if not os.path.exists(CKPT_PATH):
-    model.save_weights(CKPT_PATH)
-model.load_weights(CKPT_PATH)
-
-# %% Inference helper (returns days)
-def predict_delta_days(prefix_tokens):
-    x = pad_sequences([enc(prefix_tokens)], maxlen=maxlen, padding="post", value=PAD_ID)
-    y_scaled = model.predict(x, verbose=0)[0, 0]
-    return float(scaler.inverse_transform([[y_scaled]])[0, 0])
+# %% Inference helper (return days)
+def predict_delta_days(prefix_str: str, recent_time=0.0, latest_time=0.0, time_passed=0.0) -> float:
+    df1 = pd.DataFrame([{
+        "prefix": prefix_str,
+        "recent_time": float(recent_time),
+        "latest_time": float(latest_time),
+        "time_passed": float(time_passed),
+        "k": 0,
+        "next_time": 0.0
+    }])
+    tok_x, time_x, _, _, _ = data_loader.prepare_data_next_time(
+        df1, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    y_scaled = model.predict([tok_x, time_x], verbose=0)
+    y_days = float(y_scaler.inverse_transform(y_scaled)[0, 0])
+    
+    return max(0.0, y_days)
 
 # %% Per-k evaluation (metrics in days)
-k_vals, counts = [], []
-maes, mses, rmses = [], [], []
+k_vals, maes, mses, rmses, counts = [], [], [], [], []
 
-for k in range(1, maxlen + 1):
+for k in range(1, int(max_case_length) + 1):
     subset = test_df[test_df["k"] == k]
     if subset.empty:
         continue
 
-    X_t = pad_sequences([enc(p) for p in subset["prefix"]], maxlen=maxlen, padding="post", value=PAD_ID)
-    y_true = subset["next_time_delta"].values.reshape(-1, 1)
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(
+        subset, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
 
-    # predict (scaled) then inverse-transform to days
-    y_pred_scaled = model.predict(X_t, verbose=0)
-    y_pred = scaler.inverse_transform(y_pred_scaled)
+    y_pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    y_true_days   = y_scaler.inverse_transform(sub_y)
+    y_pred_days   = y_scaler.inverse_transform(y_pred_scaled)
 
-    k_vals.append(k); counts.append(len(subset))
-    mae  = metrics.mean_absolute_error(y_true, y_pred)
-    mse  = metrics.mean_squared_error(y_true, y_pred)
+    mae  = metrics.mean_absolute_error(y_true_days, y_pred_days)
+    mse  = metrics.mean_squared_error(y_true_days, y_pred_days)
     rmse = float(np.sqrt(mse))
+
+    k_vals.append(k)
+    counts.append(len(subset))
     maes.append(mae); mses.append(mse); rmses.append(rmse)
 
-# Macro averages across k-bins (do NOT append to curves)
+# Macro averages across k-bins
 avg_mae  = float(np.mean(maes))  if maes  else float("nan")
 avg_mse  = float(np.mean(mses))  if mses  else float("nan")
 avg_rmse = float(np.mean(rmses)) if rmses else float("nan")
@@ -270,29 +203,34 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = "/ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/plots/Baselines/Transformer/NT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/NT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history
 
+# Training curves (log-space targets)
 plt.figure(figsize=(8,5))
-plt.plot(h["loss"], label="Train Loss")
-plt.plot(h["val_loss"], label="Val Loss")
-plt.title("Loss over Epochs"); plt.xlabel("Epoch"); plt.ylabel("MSE/Huber (scaled)")
+plt.plot(h["loss"], label="Train")
+plt.plot(h["val_loss"], label="Validation")
+plt.title("Loss over Epochs (log-space)")
+plt.xlabel("Epoch"); plt.ylabel("Loss (Huber/MSE in log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"loss_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"loss_logspace_{ts}.png"), dpi=150); plt.close()
 
 plt.figure(figsize=(8,5))
-plt.plot(h["mae"], label="Train MAE (scaled)")
-plt.plot(h["val_mae"], label="Val MAE (scaled)")
-plt.title("MAE over Epochs"); plt.xlabel("Epoch"); plt.ylabel("MAE (scaled)")
+plt.plot(h["mae"], label="Train MAE (log-space)")
+plt.plot(h["val_mae"], label="Val MAE (log-space)")
+plt.title("MAE over Epochs (log-space)")
+plt.xlabel("Epoch"); plt.ylabel("MAE (log-space)")
 plt.legend(); plt.grid(True); plt.tight_layout()
-plt.savefig(os.path.join(plot_dir, f"mae_scaled_{ts}.png"), dpi=150); plt.close()
+plt.savefig(os.path.join(plot_dir, f"mae_logspace_{ts}.png"), dpi=150); plt.close()
 
+# Per-k (days)
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, maes, marker='o', label='MAE (days)')
-    plt.title('MAE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MAE (days)')
+    plt.title('MAE vs. Prefix Length (k)')
+    plt.xlabel('Prefix Length (k)'); plt.ylabel('MAE (days)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"mae_vs_k_{ts}.png"), dpi=150); plt.close()
 
@@ -304,7 +242,8 @@ if len(k_vals):
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, mses, marker='o', label='MSE (days^2)')
-    plt.title('MSE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('MSE')
+    plt.title('MSE vs. Prefix Length (k)')
+    plt.xlabel('Prefix Length (k)'); plt.ylabel('MSE (days^2)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"mse_vs_k_{ts}.png"), dpi=150); plt.close()
 
@@ -323,36 +262,53 @@ wandb.log({
 })
 
 # %% Global scatter + error histogram (days)
-X_all = pad_sequences([enc(p) for p in test_df["prefix"]], maxlen=maxlen, padding="post", value=PAD_ID)
-y_true_all = test_df["next_time_delta"].values.reshape(-1, 1)
-y_pred_all = scaler.inverse_transform(model.predict(X_all, verbose=0))
-abs_err = np.abs(y_true_all - y_pred_all).reshape(-1)
+y_pred_scaled_all = model.predict([test_tok_x, test_time_x], verbose=0)
+y_true_all_days   = y_scaler.inverse_transform(test_y)
+y_pred_all_days   = y_scaler.inverse_transform(y_pred_scaled_all)
+abs_err = np.abs(y_true_all_days - y_pred_all_days).reshape(-1)
 
 tab = wandb.Table(
-    data=[[float(y_true_all[i,0]), float(y_pred_all[i,0]), float(abs_err[i])] for i in range(len(abs_err))],
+    data=[[float(y_true_all_days[i,0]), float(y_pred_all_days[i,0]), float(abs_err[i])]
+          for i in range(len(abs_err))],
     columns=["true_days", "pred_days", "abs_err_days"]
 )
 wandb.log({
-    "scatter_true_vs_pred": wandb.plot.scatter(tab, "true_days", "pred_days", title="NT (PT): True vs Pred (days)"),
+    "scatter_true_vs_pred": wandb.plot.scatter(tab, "true_days", "pred_days", title="NT: True vs Pred (days)"),
     "error_hist": wandb.Histogram(abs_err),
 })
 
 # %% Sample predictions (days)
 sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
-s_table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+table = wandb.Table(columns=["case_id","k","prefix","gold_days","pred_days","abs_err_days"])
+
 for _, r in sample.iterrows():
-    pred = predict_delta_days(r["prefix"])
-    gold = float(r["next_time_delta"])
-    s_table.add_data(r["case_id"], r["k"], " → ".join(r["prefix"]), gold, pred, abs(gold - pred))
-    print("Prefix:", " → ".join(r["prefix"]))
-    print(f"Gold (days): {gold:.2f}")
-    print(f"Pred (days): {pred:.2f}")
+    sub = r.to_frame().T
+    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(
+        sub, x_word_dict, max_case_length,
+        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
+    )
+    pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
+    gold_days = float(y_scaler.inverse_transform(sub_y)[0, 0])
+    pred_days = float(y_scaler.inverse_transform(pred_scaled)[0, 0])
+    
+    print("Prefix:", " → ".join(r["prefix"].split() if isinstance(r["prefix"], str) else r["prefix"]))
+    print(f"Gold (days): {gold_days:.2f}")
+    print(f"Pred (days): {pred_days:.2f}")
     print("-"*60)
-wandb.log({"samples": s_table})
+    
+    table.add_data(
+        r["case_id"], 
+        int(r["k"]), 
+        r["prefix"], 
+        gold_days, 
+        pred_days, 
+        abs(gold_days - pred_days)
+    )
+wandb.log({"samples": table})
 
 # %% Save checkpoint as W&B artifact
-artifact = wandb.Artifact("transformer_nt_bpi2012c_model", type="model")
-artifact.add_file(CKPT_PATH)
+artifact = wandb.Artifact(f"transformer_nt_model_{config['dataset']}", type="model")
+artifact.add_file(config["checkpoint_path"])
 run.log_artifact(artifact)
 
 # %%

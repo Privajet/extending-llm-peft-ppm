@@ -52,10 +52,12 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% Config
+DATASET = "HelpDesk"
+
 config = {
     # bookkeeping
-    "dataset":                  "HelpDesk",
-    "checkpoint_path":          "/tmp/best_lstm_nt_HelpDesk.weights.h5",
+    "dataset":                  DATASET,
+    "checkpoint_path":          f"/tmp/best_lstm_nt_{DATASET}.weights.h5",
     "monitor_metric":           "val_loss",
     "monitor_mode":             "min",
     # optimization
@@ -87,7 +89,7 @@ np.random.seed(config["seed"])
 
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
-    project="baseline_lstm_NT_HelpDesk",
+    project=f"baseline_lstm_NT_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"lstm_nt_{ts}",
     config=config
@@ -345,7 +347,7 @@ for _, r in sample.iterrows():
 wandb.log({"samples": table})
 
 # %% Save checkpoint as W&B artifact
-artifact = wandb.Artifact("lstm_nt_model_helpdesk", type="model")
+artifact = wandb.Artifact(f"lstm_nt_model_{config['dataset']}", type="model")
 artifact.add_file(config["checkpoint_path"])
 run.log_artifact(artifact)
 
