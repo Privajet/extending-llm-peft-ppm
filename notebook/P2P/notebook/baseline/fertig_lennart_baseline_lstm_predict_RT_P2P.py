@@ -63,7 +63,6 @@ config = {
     # optimization
     "learning_rate":            3e-4, 
     "clipnorm":                 1.0,
-    "early_stop_patience":      7,
     "batch_size":               64,
     "epochs":                   90,
     # scheduler & early stop
@@ -79,6 +78,7 @@ config = {
     "recurrent_dropout":        0.10,       # added (20.09.)
     "l2":                       1e-5,
 }
+
 
 # %%
 config["seed"] = 42

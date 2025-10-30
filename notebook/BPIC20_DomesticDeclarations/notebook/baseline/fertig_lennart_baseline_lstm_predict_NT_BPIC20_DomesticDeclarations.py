@@ -63,8 +63,7 @@ config = {
     # optimization
     "learning_rate":            3e-4, 
     "clipnorm":                 1.0,
-    "early_stop_patience":      7,
-    "batch_size":               128,
+    "batch_size":               64,
     "epochs":                   90,
     # scheduler & early stop
     "early_stop_patience":      7,
@@ -76,7 +75,7 @@ config = {
     "lstm_units_1":             256,        # 128 → 256 (20.09.)
     "lstm_units_2":             128,        # 64 → 128 (20.09.)
     "dropout":                  0.30,       # 0.20 → 0.30 (20.09.)
-    # "recurrent_dropout":        0.10,       # added (20.09.)
+    "recurrent_dropout":        0.10,       # added (20.09.)
     "l2":                       1e-5,
 }
 

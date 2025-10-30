@@ -18,7 +18,7 @@ if cands:
     except OSError:
         pass
 
-import numpy as np 
+import numpy as np
 import pandas as pd
 import tensorflow as tf
 import matplotlib
@@ -31,9 +31,7 @@ from wandb.integration.keras import WandbMetricsLogger
 
 from sklearn import metrics
 
-from tensorflow.keras import layers
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 
 # Data Pipeline + Model
@@ -58,6 +56,11 @@ config = {
     "learning_rate":            1e-3,           # 3e-4 (27.09.); 1e-4 (28.09.); 1e-2 (10.10.); 1e-3 (11.10.), 5e-4, 3e-4, 1e-4
     "batch_size":               12,             # 32→64 helps stability here (20.09.)
     "epochs":                   100,            # 100 (10.10.)
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
     # model scale / regularization
     "embed_dim":                36,             # 64→128 (try 256 if VRAM allows) (20.09.)
     "num_heads":                4,              # keep embed_dim % num_heads == 0 (20.09.)
@@ -107,13 +110,11 @@ model = transformer.get_next_activity_model(
     num_heads=config["num_heads"],
     ff_dim=config["ff_dim"]
 )
-
 metrics_list = [
     tf.keras.metrics.SparseCategoricalAccuracy(),
     tf.keras.metrics.SparseTopKCategoricalAccuracy(k=3, name="top3"),
     tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5, name="top5")
 ]
-
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]),
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -121,15 +122,29 @@ model.compile(
 )
 
 # %%
-checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
-    config["checkpoint_path"], 
+checkpoint_cb = ModelCheckpoint(
+    filepath=config["checkpoint_path"], 
     save_weights_only=True,
-    monitor=config["monitor_metric"], 
-    mode=config["monitor_mode"], 
-    save_best_only=True, 
+    monitor=config["monitor_metric"],  
+    save_best_only=True,
+    mode=config["monitor_mode"],        
     verbose=1
 )
-
+early_stop = EarlyStopping(
+    monitor=config["monitor_metric"],
+    patience=config["early_stop_patience"],
+    restore_best_weights=True,
+    mode=config["monitor_mode"],
+    verbose=1
+)
+reduce_lr = ReduceLROnPlateau(
+    monitor=config["monitor_metric"],    
+    factor=config["reduce_lr_factor"],  
+    patience=config["reduce_lr_patience"],
+    min_lr=config["min_lr"],              
+    mode=config["monitor_mode"],          
+    verbose=1
+)
 history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),

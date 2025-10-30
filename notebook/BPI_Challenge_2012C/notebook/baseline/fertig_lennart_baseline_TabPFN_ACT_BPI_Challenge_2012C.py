@@ -64,7 +64,7 @@ config = {
     # bookkeeping
     "dataset":                  DATASET,
     # model scale
-    "sample_size":              10000,  # downsample train for speed/stability; set None to disable
+    "sample_size":              3000,  # downsample train for speed/stability; set None to disable
 }
 
 # %%
@@ -119,8 +119,7 @@ model = (ManyClassClassifier(
             estimator=model,
             alphabet_size=min(10, len(y_word_dict)),
             n_estimators_redundancy=3,
-            random_state=config["seed"],
-            verbose=1
+            random_state=config["seed"]
          ) if use_manyclass else model)
 
 # Downsample to keep TabPFN stable/fast on large datasets
@@ -155,7 +154,7 @@ def predict_next(prefix_str: str, topk=5):
     tok_x, _ = data_loader.prepare_data_next_activity(
         df1, x_word_dict, y_word_dict, max_case_length, shuffle=False
     )
-    logits = model.predict(tok_x, verbose=0)[0]
+    logits = model.predict(tok_x)[0]
     probs  = tf.nn.softmax(logits).numpy()
 
     top_idx = probs.argsort()[-topk:][::-1]

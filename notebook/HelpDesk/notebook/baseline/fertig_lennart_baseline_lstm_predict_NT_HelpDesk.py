@@ -63,7 +63,6 @@ config = {
     # optimization
     "learning_rate":            3e-4, 
     "clipnorm":                 1.0,
-    "early_stop_patience":      7,
     "batch_size":               64,
     "epochs":                   90,
     # scheduler & early stop
@@ -181,7 +180,6 @@ reduce_lr = ReduceLROnPlateau(
     min_lr=config["min_lr"],
     verbose=1
 )
-
 history = model.fit(
     [train_tok_x, train_time_x], train_y,
     validation_data=([val_tok_x, val_time_x], val_y),
