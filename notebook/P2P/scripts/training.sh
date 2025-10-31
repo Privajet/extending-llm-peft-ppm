@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=P2P_NT_MAJ_training
+#SBATCH --job-name=P2P_ACT_TabPFN_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -45,7 +45,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # BASELINES
 # Majority:
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_ACT_P2P.py
-srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_NT_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_NT_P2P.py
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_majority_class_RT_P2P.py
 
 # NGram:
@@ -64,7 +64,7 @@ srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennar
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_processTransformer_RT_P2P.py
 
 # TabPFN:
-# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_P2P.py
+srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_P2P.py
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_NT_P2P.py
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_P2P.py
 

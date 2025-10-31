@@ -157,7 +157,11 @@ def predict_next(prefix_str: str, topk=5):
     )
     logits = model.predict(tok_x)[0]
     probs  = tf.nn.softmax(logits).numpy()
-
+    
+    logits_batch = model.predict(tok_x)
+    if logits_batch.size == 0:
+        return None, [], 0.0, []
+         
     top_idx = probs.argsort()[-topk:][::-1]
     top_lbl = [inv_y[i] for i in top_idx]
     top_prb = [float(probs[i]) for i in top_idx]

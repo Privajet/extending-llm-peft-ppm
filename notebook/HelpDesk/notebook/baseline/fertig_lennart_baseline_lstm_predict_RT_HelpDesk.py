@@ -125,7 +125,8 @@ x = LSTM(
     recurrent_dropout=config["recurrent_dropout"],
     kernel_regularizer=l2(config["l2"]),
     recurrent_initializer="orthogonal",
-    recurrent_regularizer=l2(config["l2"])
+    recurrent_regularizer=l2(config["l2"]),
+    use_cudnn=False
 )(x)
 x = Dropout(config["dropout"])(x)
 
@@ -136,7 +137,8 @@ if config["lstm_units_2"] > 0:
         recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
-        recurrent_regularizer=l2(config["l2"])
+        recurrent_regularizer=l2(config["l2"]),
+        use_cudnn=False
     )(x)
     x = Dropout(config["dropout"])(x)
 

@@ -61,7 +61,7 @@ config = {
     # bookkeeping
     "dataset":                  DATASET,
     # model scale
-    "sample_size":              3000,  # downsample train for speed/stability; set None to disable
+    "sample_size":              5000,  # downsample train for speed/stability; set None to disable
 }
 
 # %%

@@ -63,7 +63,7 @@ config = {
     # optimization
     "learning_rate":            3e-4, 
     "clipnorm":                 1.0,
-    "batch_size":               64,
+    "batch_size":               128,
     "epochs":                   90,
     # scheduler & early stop
     "early_stop_patience":      7,
@@ -126,7 +126,8 @@ x = LSTM(
     # recurrent_dropout=config["recurrent_dropout"],
     kernel_regularizer=l2(config["l2"]),
     recurrent_initializer="orthogonal",
-    recurrent_regularizer=l2(config["l2"])
+    recurrent_regularizer=l2(config["l2"]),
+    use_cudnn=False
 )(x)
 x = Dropout(config["dropout"])(x)
 
@@ -137,7 +138,8 @@ if config["lstm_units_2"] > 0:
         # recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
-        recurrent_regularizer=l2(config["l2"])
+        recurrent_regularizer=l2(config["l2"]),
+        use_cudnn=False
     )(x)
     x = Dropout(config["dropout"])(x)
 

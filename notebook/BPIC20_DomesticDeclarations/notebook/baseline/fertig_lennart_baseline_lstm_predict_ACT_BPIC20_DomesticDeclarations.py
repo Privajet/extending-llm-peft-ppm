@@ -59,13 +59,8 @@ config = {
     "monitor_mode":             "max",
     # optimization
     "learning_rate":            3e-4,       # 5e-4 → 3e-4 20.09.
-    "batch_size":               12,
+    "batch_size":               256,
     "epochs":                   100,
-    # scheduler & early stop
-    "early_stop_patience":      7,
-    "reduce_lr_factor":         0.5,
-    "reduce_lr_patience":       3,
-    "min_lr":                   1e-6,
     # model scale / regularization
     "embed_dim":                256,        # 64 → 256 20.09.
     "lstm_units_1":             256,        # 128 → 256 20.09.
@@ -164,21 +159,8 @@ checkpoint_cb = ModelCheckpoint(
     filepath=config["checkpoint_path"],
     save_weights_only=True,
     monitor=config["monitor_metric"],
-    save_best_only=True,
     mode=config["monitor_mode"],
-    verbose=1
-)
-early_stop = EarlyStopping(
-    monitor=config["monitor_metric"],
-    patience=config["early_stop_patience"],
-    restore_best_weights=True,
-    verbose=1
-)
-reduce_lr = ReduceLROnPlateau(
-    monitor=config["monitor_metric"],
-    factor=config["reduce_lr_factor"],
-    patience=config["reduce_lr_patience"],
-    min_lr=config["min_lr"],
+    save_best_only=True,
     verbose=1
 )
 history = model.fit(

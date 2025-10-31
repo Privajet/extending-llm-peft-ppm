@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BPI_Challenge_2012C_RT_TabPFN_training
+#SBATCH --job-name=BPI_Challenge_2012C_RT_Transformer_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -61,12 +61,12 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # ProcessTransformer:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_processTransformer_ACT_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_processTransformer_NT_BPI_Challenge_2012C.py
-# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_processTransformer_RT_BPI_Challenge_2012C.py
+srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_processTransformer_RT_BPI_Challenge_2012C.py
 
 # TabPFN:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_NT_BPI_Challenge_2012C.py
-srun python - u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_BPI_Challenge_2012C.py
 
 # LLM (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_BPI_Challenge_2012C.py

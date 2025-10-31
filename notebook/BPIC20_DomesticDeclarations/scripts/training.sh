@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BPIC20_DomesticDeclarations_RT_LSTM_training
+#SBATCH --job-name=BPIC20_DomesticDeclarations_NT_Transformer_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -56,11 +56,11 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # LSTM:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_lstm_predict_NT_BPIC20_DomesticDeclarations.py
-srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_lstm_predict_RT_BPIC20_DomesticDeclarations.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_lstm_predict_RT_BPIC20_DomesticDeclarations.py
 
 # ProcessTransformer:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_processTransformer_ACT_BPIC20_DomesticDeclarations.py
-# srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_processTransformer_NT_BPIC20_DomesticDeclarations.py
+srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_processTransformer_NT_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_processTransformer_RT_BPIC20_DomesticDeclarations.py
 
 # TabPFN:

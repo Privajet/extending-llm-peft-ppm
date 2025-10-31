@@ -79,7 +79,6 @@ config = {
     "l2":                       1e-5,
 }
 
-
 # %%
 config["seed"] = 42
 tf.keras.utils.set_random_seed(config["seed"])
@@ -126,7 +125,8 @@ x = LSTM(
     recurrent_dropout=config["recurrent_dropout"],
     kernel_regularizer=l2(config["l2"]),
     recurrent_initializer="orthogonal",
-    recurrent_regularizer=l2(config["l2"])
+    recurrent_regularizer=l2(config["l2"]),
+    use_cudnn=False
 )(x)
 x = Dropout(config["dropout"])(x)
 
@@ -137,7 +137,8 @@ if config["lstm_units_2"] > 0:
         recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
-        recurrent_regularizer=l2(config["l2"])
+        recurrent_regularizer=l2(config["l2"]),
+        use_cudnn=False
     )(x)
     x = Dropout(config["dropout"])(x)
 
@@ -181,7 +182,6 @@ reduce_lr = ReduceLROnPlateau(
     min_lr=config["min_lr"], 
     verbose=1
 )
-
 history = model.fit(
     [train_tok_x, train_time_x], train_y,
     validation_data=([val_tok_x, val_time_x], val_y),
