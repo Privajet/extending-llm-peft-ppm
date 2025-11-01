@@ -155,17 +155,18 @@ def predict_next(prefix_str: str, topk=5):
     tok_x, _ = data_loader.prepare_data_next_activity(
         df1, x_word_dict, y_word_dict, max_case_length, shuffle=False
     )
-    logits = model.predict(tok_x)[0]
-    probs  = tf.nn.softmax(logits).numpy()
-    
     logits_batch = model.predict(tok_x)
     if logits_batch.size == 0:
+        # No predictions returned; return empty results
         return None, [], 0.0, []
-         
+
+    logits = logits_batch[0]
+    probs  = tf.nn.softmax(logits).numpy()
+
     top_idx = probs.argsort()[-topk:][::-1]
     top_lbl = [inv_y[i] for i in top_idx]
     top_prb = [float(probs[i]) for i in top_idx]
-    
+
     return top_lbl[0], top_lbl, top_prb[0], top_prb
 
 # %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
