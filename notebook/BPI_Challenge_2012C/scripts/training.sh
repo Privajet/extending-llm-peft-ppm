@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BPI_Challenge_2012C_RT_TabPFN_training
+#SBATCH --job-name=BPI_Challenge_2012C_ACT_gpt-neo-1.3B_FS_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -23,8 +23,8 @@ mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" "$WANDB_DIR" logs
 eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 
 # >>> HIER die gewünschte Env wählen <<<
-ENV_NAME=${ENV_NAME:-thesis-baselines}
-# ENV_NAME=${ENV_NAME:-thesis-llm}
+# ENV_NAME=${ENV_NAME:-thesis-baselines}
+ENV_NAME=${ENV_NAME:-thesis-llm}
 # ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
 conda activate "$ENV_NAME"
 
@@ -66,17 +66,29 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # TabPFN:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_ACT_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_NT_BPI_Challenge_2012C.py
-srun python - u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_BPI_Challenge_2012C.py
 
-# LLM (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
+# GPT-Neo-1.3B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Zero-Shot-Learning_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Zero-Shot-Learning_BPI_Challenge_2012C.py
 
-# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_BPI_Challenge_2012C.py
+srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Few-Shot-Learning_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Few-Shot-Learning_BPI_Challenge_2012C.py
 
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Fine-Tuning_SFT_Trainier_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Fine-Tuning_SFT_Trainier_BPI_Challenge_2012C.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Fine-Tuning_SFT_Trainier_BPI_Challenge_2012C.py
+
+# Qwen3-4B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_ACT_Zero-Shot-Learning_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_NT_Zero-Shot-Learning_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_RT_Zero-Shot-Learning_BPI_Challenge_2012C.py
+
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_ACT_Few-Shot-Learning_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_NT_Few-Shot-Learning_BPI_Challenge_2012C.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_RT_Few-Shot-Learning_BPI_Challenge_2012C.py
+
+# Llama-3.1-8B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
+# srun python -u /ceph/lfertig/Thesis/notebook/BPI_Challenge_2012C/notebook/Llama-3.1-8B/fertig_lennart_Llama-3.1-8B_ACT_Zero-Shot-Learning_BPI_Challenge_2012C.py

@@ -31,7 +31,6 @@ from wandb.integration.keras import WandbMetricsLogger
 
 from sklearn import metrics
 
-from tensorflow.keras import layers
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 
@@ -108,7 +107,6 @@ model = transformer.get_next_time_model(
     num_heads=config["num_heads"],
     ff_dim=config["ff_dim"]
 )
-
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]),
     loss=tf.keras.losses.LogCosh(),
@@ -118,28 +116,27 @@ model.compile(
 # %% Callbacks
 checkpoint_cb = ModelCheckpoint(
     filepath=config["checkpoint_path"], 
-    save_weights_only=True, 
-    monitor=config["monitor_metric"], 
-    save_best_only=True, 
-    mode=config["monitor_mode"], 
+    save_weights_only=True,
+    monitor=config["monitor_metric"],  
+    save_best_only=True,
+    mode=config["monitor_mode"],        
     verbose=1
 )
 early_stop = EarlyStopping(
-    monitor=config["monitor_metric"], 
-    patience=config["early_stop_patience"], 
-    restore_best_weights=True, 
-    mode=config["monitor_mode"], 
+    monitor=config["monitor_metric"],
+    patience=config["early_stop_patience"],
+    restore_best_weights=True,
+    mode=config["monitor_mode"],
     verbose=1
 )
 reduce_lr = ReduceLROnPlateau(
-    monitor=config["monitor_metric"], 
-    factor=config["reduce_lr_factor"], 
-    patience=config["reduce_lr_patience"], 
-    min_lr=config["min_lr"], 
-    mode=config["monitor_mode"], 
+    monitor=config["monitor_metric"],    
+    factor=config["reduce_lr_factor"],  
+    patience=config["reduce_lr_patience"],
+    min_lr=config["min_lr"],              
+    mode=config["monitor_mode"],          
     verbose=1
 )
-
 history = model.fit(
     [train_tok_x, train_time_x], train_y,
     validation_data=([val_tok_x, val_time_x], val_y),
@@ -203,7 +200,7 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/NT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/Transformer/NT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history

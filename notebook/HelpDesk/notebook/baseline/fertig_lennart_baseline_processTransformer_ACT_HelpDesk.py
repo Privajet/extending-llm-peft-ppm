@@ -31,9 +31,7 @@ from wandb.integration.keras import WandbMetricsLogger
 
 from sklearn import metrics
 
-from tensorflow.keras import layers
-from tensorflow.keras.preprocessing.sequence import pad_sequences
-from tensorflow.keras.callbacks import ModelCheckpoint
+from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 
 # Data Pipeline + Model
@@ -58,6 +56,11 @@ config = {
     "learning_rate":            1e-3,           # 3e-4 (27.09.); 1e-4 (28.09.); 1e-2 (10.10.); 1e-3 (11.10.), 5e-4, 3e-4, 1e-4
     "batch_size":               12,             # 32→64 helps stability here (20.09.)
     "epochs":                   100,            # 100 (10.10.)
+    # scheduler & early stop
+    "early_stop_patience":      7,
+    "reduce_lr_factor":         0.5,
+    "reduce_lr_patience":       3,
+    "min_lr":                   1e-6,
     # model scale / regularization
     "embed_dim":                36,             # 64→128 (try 256 if VRAM allows) (20.09.)
     "num_heads":                4,              # keep embed_dim % num_heads == 0 (20.09.)
@@ -107,13 +110,11 @@ model = transformer.get_next_activity_model(
     num_heads=config["num_heads"],
     ff_dim=config["ff_dim"]
 )
-
 metrics_list = [
     tf.keras.metrics.SparseCategoricalAccuracy(),
     tf.keras.metrics.SparseTopKCategoricalAccuracy(k=3, name="top3"),
     tf.keras.metrics.SparseTopKCategoricalAccuracy(k=5, name="top5")
 ]
-
 model.compile(
     optimizer=tf.keras.optimizers.Adam(learning_rate=config["learning_rate"], clipnorm=config["clipnorm"]),
     loss=tf.keras.losses.SparseCategoricalCrossentropy(from_logits=True),
@@ -121,15 +122,29 @@ model.compile(
 )
 
 # %%
-checkpoint_cb = tf.keras.callbacks.ModelCheckpoint(
-    config["checkpoint_path"], 
+checkpoint_cb = ModelCheckpoint(
+    filepath=config["checkpoint_path"], 
     save_weights_only=True,
-    monitor=config["monitor_metric"], 
-    mode=config["monitor_mode"], 
-    save_best_only=True, 
+    monitor=config["monitor_metric"],  
+    save_best_only=True,
+    mode=config["monitor_mode"],        
     verbose=1
 )
-
+early_stop = EarlyStopping(
+    monitor=config["monitor_metric"],
+    patience=config["early_stop_patience"],
+    restore_best_weights=True,
+    mode=config["monitor_mode"],
+    verbose=1
+)
+reduce_lr = ReduceLROnPlateau(
+    monitor=config["monitor_metric"],    
+    factor=config["reduce_lr_factor"],  
+    patience=config["reduce_lr_patience"],
+    min_lr=config["min_lr"],              
+    mode=config["monitor_mode"],          
+    verbose=1
+)
 history = model.fit(
     X_train, y_train,
     validation_data=(X_val, y_val),
@@ -162,15 +177,20 @@ def predict_next(prefix_str: str, topk=5):
 # %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for i in range(int(max_case_length)):
-    test_data_subset = test_df[test_df["k"] == i]
-    if len(test_data_subset) > 0:
-        test_token_x, test_token_y = data_loader.prepare_data_next_activity(test_data_subset, x_word_dict, y_word_dict, max_case_length)
+for i in sorted(test_df["k"].astype(int).unique()):
+    subset = test_df[test_df["k"] == i]
+    if len(subset) > 0:
+        test_token_x, test_token_y = data_loader.prepare_data_next_activity(subset, x_word_dict, y_word_dict, max_case_length)
         y_pred = np.argmax(model.predict(test_token_x, verbose=0), axis=1)
+        
         accuracy = metrics.accuracy_score(test_token_y, y_pred)
         precision, recall, fscore, _ = metrics.precision_recall_fscore_support(test_token_y, y_pred, average="weighted", zero_division=0)
-        k_vals.append(i); counts.append(len(test_token_y))
-        accuracies.append(accuracy); fscores.append(fscore); precisions.append(precision); recalls.append(recall)
+        k_vals.append(i)
+        counts.append(len(test_token_y))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
 avg_f1 = float(np.mean(fscores)) if fscores else float("nan")
@@ -183,7 +203,7 @@ print(f"Average precision across all prefixes: {avg_precision:.4f}")
 print(f"Average recall across all prefixes:    {avg_recall:.4f}") 
 
 # Micro (global) accuracy over all test prefixes
-y_pred_all = np.argmax(model.predict(X_val), axis=1)
+y_pred_all = np.argmax(model.predict(X_val, verbose=0), axis=1)
 micro_acc_val = metrics.accuracy_score(y_val, y_pred_all)
 print(f"[VAL]  Micro (global) accuracy: {micro_acc_val:.4f}")
 

@@ -59,14 +59,14 @@ config = {
     "monitor_mode":             "max",
     # optimization
     "learning_rate":            3e-4,       # 5e-4 → 3e-4 20.09.
-    "batch_size":               128,
+    "batch_size":               256,
     "epochs":                   100,
     # model scale / regularization
     "embed_dim":                256,        # 64 → 256 20.09.
     "lstm_units_1":             256,        # 128 → 256 20.09.
     "lstm_units_2":             128,        # 64 → 128 20.09.
     "dropout":                  0.30,       # 0.0 → 0.3 20.09
-    # "recurrent_dropout":        0.00,
+    "recurrent_dropout":        0.00,
     "l2":                       1e-5,       # 1e-4 → 1e-5 20.09.
     "clipnorm":                 1.0
 }
@@ -114,11 +114,11 @@ layers = [
         config["lstm_units_1"],
         return_sequences=(config["lstm_units_2"] > 0),
         dropout=config["dropout"],
-        # recurrent_dropout=config["recurrent_dropout"],
+        recurrent_dropout=config["recurrent_dropout"],
         kernel_regularizer=l2(config["l2"]),
         recurrent_regularizer=l2(config["l2"]),
         recurrent_initializer="orthogonal",
-        use_cudnn=True
+        use_cudnn=False
     ),
     Dropout(config["dropout"])
 ]
@@ -128,11 +128,11 @@ if config["lstm_units_2"] > 0:
         LSTM(
             config["lstm_units_2"],
             dropout=config["dropout"],
-            # recurrent_dropout=config["recurrent_dropout"],
+            recurrent_dropout=config["recurrent_dropout"],
             kernel_regularizer=l2(config["l2"]),
             recurrent_regularizer=l2(config["l2"]),
             recurrent_initializer="orthogonal",
-            use_cudnn=True
+            use_cudnn=False
         ),
         Dropout(config["dropout"])
     ]

@@ -203,7 +203,7 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/NT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/Transformer/NT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history

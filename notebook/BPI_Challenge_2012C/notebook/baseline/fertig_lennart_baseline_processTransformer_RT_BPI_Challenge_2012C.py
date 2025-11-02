@@ -31,7 +31,6 @@ from wandb.integration.keras import WandbMetricsLogger
 
 from sklearn import metrics
 
-from tensorflow.keras import layers
 from tensorflow.keras.callbacks import ModelCheckpoint, EarlyStopping, ReduceLROnPlateau
 from tensorflow.keras.optimizers import Adam
 
@@ -106,7 +105,6 @@ model = transformer.get_remaining_time_model(
     num_heads=config["num_heads"],
     ff_dim=config["ff_dim"]
 )
-
 model.compile(
     optimizer=Adam(learning_rate=config["learning_rate"],clipnorm=config["clipnorm"]),
     loss=tf.keras.losses.LogCosh(),
@@ -129,7 +127,6 @@ early_stop = EarlyStopping(
     mode=config["monitor_mode"],
     verbose=1
 )
-
 reduce_lr = ReduceLROnPlateau(
     monitor=config["monitor_metric"],    
     factor=config["reduce_lr_factor"],  
@@ -199,7 +196,7 @@ print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
 # %% Plots → disk
-plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/LSTM/RT"
+plot_dir = f"/ceph/lfertig/Thesis/notebook/{config['dataset']}/plots/Baselines/Transformer/RT"
 os.makedirs(plot_dir, exist_ok=True)
 
 h = history.history

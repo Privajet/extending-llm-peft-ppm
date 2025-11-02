@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=HelpDesk_ACT_LSTM_training
+#SBATCH --job-name=HelpDesk_ACT_gpt-neo-1.3B_FS_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -23,8 +23,8 @@ mkdir -p "$HF_HOME" "$TRANSFORMERS_CACHE" "$WANDB_DIR" logs
 eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 
 # >>> HIER die gewünschte Env wählen <<<
-ENV_NAME=${ENV_NAME:-thesis-baselines}
-# ENV_NAME=${ENV_NAME:-thesis-llm}
+# ENV_NAME=${ENV_NAME:-thesis-baselines}
+ENV_NAME=${ENV_NAME:-thesis-llm}
 # ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
 conda activate "$ENV_NAME"
 
@@ -54,7 +54,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_ngram_RT_HelpDesk.py
 
 # LSTM:
-srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_HelpDesk.py
+# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_ACT_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_NT_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_lennart_baseline_lstm_predict_RT_HelpDesk.py
 
@@ -73,7 +73,7 @@ srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/baseline/fertig_l
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Zero-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Zero-Shot-Learning_HelpDesk.py
 
-# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_HelpDesk.py
+srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Few-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Few-Shot-Learning_HelpDesk.py
 

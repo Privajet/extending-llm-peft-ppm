@@ -1,4 +1,4 @@
-# %% Few-shot (ICL) Next-Activity (ACT) with GPT-Neo-1.3B — aligned to your Zero-Shot structure
+# %% Few-shot (ICL) Next-Activity (ACT) with GPT-Neo-1.3B
 # - strict label scoring via log-likelihood of [prompt + label (+EOS)]
 # - TF-IDF retrieval for few-shot demos (MMR diversified), temporal split (no leakage)
 # - candidate pruning via TRAIN bigrams (top-K), optional soft bigram boost / hard filter
@@ -30,25 +30,83 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
-from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-from collections import Counter, defaultdict, OrderedDict
-
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
+from collections import Counter, defaultdict, OrderedDict
 
-# %% Repro + logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
-    # Deterministic (reporting)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+# %% 
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
 
-logging.basicConfig(
-    level=logging.INFO,
+# %%
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FS/ACT"
+}
+
+FS_CFG = {
+    # model / runtime
+    "family":                   "neo",
+    "model_name":               "EleutherAI/gpt-neo-1.3B",
+    "dtype":                    "fp16",                                 # "fp32" if CPU-only
+    "device":                   "auto",
+    # prompt & context
+    "n_shots":                  5,                                      # grid: [3,5]
+    "ctx_events":               12,                                     # query-tail events (aligned name with ZS; used in prompt)
+    "max_demo_events":          10,                                     # demo prefix truncation (grid: [6,8,10])
+    "event_sep":                " → ",
+    "prompt_tmpl_demo":         (
+                                "Trace: {trace}\n"
+                                "Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Labels:\n{labels}\n"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Labels:\n{labels}\n"
+                                "Answer:"
+                                ),
+    "add_eos_after_label":      True,
+    # scoring
+    "length_norm":              True,
+    "temperature":              0.7,                                    # tune on val
+    "use_class_prior":          False,
+    "prior_alpha":              0.00,                                   # tune on val
+    "bigram_weight":            1.2,                                    # for soft bigram boost (tune on val)
+    # transition knowledge
+    "use_bigram_boost":         True,                                   # soft bump for labels seen after last event in TRAIN
+    "bigram_boost":             0.30,
+    "use_bigram_filter":        True,                                   # hard filter to only labels seen after last event
+    # pruning
+    "K_prune":                  8,                                      # grid: [8,12,16]
+    "no_self_loop_if_unseen":   True,                                   # if last event unseen, allow self-loop (otherwise it would be pruned out)
+    # validation sweep (tiny)
+    "do_val_tune":              True,
+    "grid_taus":                [0.6, 0.7, 0.8],
+    "grid_alphas":              [0.0, 0.1],
+    "grid_K":                   [6, 8, 12],
+    "grid_shots":               [3, 5],
+    "ctx_events_grid":          [8, 12, 16],
+    # evaluation
+    "topk":                     [1, 3, 5],
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -56,76 +114,20 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %% W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# %% Configs
-RUN_CFG = {
-    "seed": SEED,
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/gpt-neo-1.3B/FS/ACT",
-}
-
-FS_CFG = {
-    # model / runtime
-    "family": "neo",
-    "model_name": "EleutherAI/gpt-neo-1.3B",
-    "dtype": "fp16",            # "fp32" if CPU-only
-    "device": "auto",
-    # prompt & context (few-shot)
-    "n_shots": 5,               # grid: [3,5]
-    "ctx_events": 12,           # query-tail events (aligned name with ZS; used in prompt)
-    "max_demo_events": 10,      # demo prefix truncation (grid: [6,8,10])
-    "event_sep": " → ",
-    "prompt_tmpl_demo": (
-        "Trace: {trace}\n"
-        "Choose the next activity from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer: {gold}\n\n"
-    ),
-    "prompt_tmpl_query": (
-        "Trace: {trace}\n"
-        "Choose the next activity from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer:"
-    ),
-    # scoring & calibration
-    "add_eos_after_label": True,
-    "length_norm": True,
-    "temperature": 0.7,         # tune on val
-    "use_class_prior": False,
-    "prior_alpha": 0.00,        # tune on val
-    "bigram_weight": 1.2,        # for soft bigram boost (tune on val)
-    # transition knowledge
-    "use_bigram_boost": True,   # soft bump for labels seen after last event in TRAIN
-    "bigram_boost": 0.30,
-    "use_bigram_filter": True, # hard filter to only labels seen after last event
-    # pruning
-    "K_prune": 8,              # grid: [8,12,16]
-    "no_self_loop_if_unseen": True, # if last event unseen, allow self-loop (otherwise it would be pruned out)
-    # validation sweep (tiny)
-    "do_val_tune": True,
-    "grid_taus":   [0.6, 0.7, 0.8],
-    "grid_alphas": [0.0, 0.1],
-    "grid_K":      [6, 8, 12],
-    "grid_shots":  [3, 5],
-    "ctx_events_grid": [8, 12, 16],
-    # evaluation
-    "topk": [1, 3, 5],
-}
-
 run = wandb.init(
-    project="gpt-neo-1.3B_ACT_FewShot_HelpDesk",
+    project=f"gpt-neo-1.3B_ACT_FewShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"neo_icl_act_{ts}",
-    config={"run_cfg": RUN_CFG, "fs_cfg": FS_CFG},
+    name=f"neo_fs_act_{ts}",
+    config=config,
+    resume="never",
+    force=True
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_test.csv")
 
 for d in (train_df, val_df, test_df):
     d.rename(columns={"next_act": "next_activity"}, inplace=True)
@@ -365,6 +367,9 @@ def make_cands_and_demos(prefix, K, n_shots):
     return cands, demos
 
 # %% Scoring (batch over pruned candidates)
+# 1) cands + demos (no tokenization)
+# 2) ZS-style cached tokenization
+# 3) batch scoring
 def _softmax_np(x):
     x = np.array(x, dtype=np.float32); m = x.max(); e = np.exp(x - m); s = e.sum()
     return (e/s) if s > 0 else np.ones_like(x)/len(x)
@@ -373,27 +378,19 @@ def _softmax_np(x):
 def score_cands(prefix, K=None, n_shots=None):
     K = FS_CFG["K_prune"] if K is None else K
     n_shots = FS_CFG["n_shots"] if n_shots is None else n_shots
-
-    # 1) cands + demos (no tokenization)
     cands, demos = make_cands_and_demos(prefix, K, n_shots)
     if not len(cands):
         return np.array([]), np.array([]), []
-
-    # 2) ZS-style cached tokenization
     base_ids = get_prompt_ids(prefix, cands, demos)
-
-    # 3) batch scoring
     rows, lens = [], []
     for lbl in cands:
         L = LABEL_TENSORS[lbl]
         rows.append(torch.cat([base_ids, L], dim=0))
         lens.append(int(L.size(0)))
-
     pad = tokenizer.pad_token_id
     input_ids = torch.nn.utils.rnn.pad_sequence(rows, batch_first=True, padding_value=pad)
     attn = (input_ids != pad)  # bool mask
     logits = model(input_ids=input_ids, attention_mask=attn).logits.float()
-
     cut = base_ids.size(0)
     scores = []
     for i, lbl in enumerate(cands):
@@ -469,7 +466,7 @@ tune_on_val()
 
 # Record final knobs + a prompt sample (debug)
 if len(val_df):
-    ex = val_df.sample(1, random_state=SEED).iloc[0]
+    ex = val_df.sample(1, random_state=config["seed"]).iloc[0]
     cands_s, demos_s = make_cands_and_demos(ex["prefix"], FS_CFG["K_prune"], FS_CFG["n_shots"])
     pstr = build_fs_prompt(ex["prefix"], cands_s, demos_s)
     wandb.config.update({
@@ -482,42 +479,51 @@ if len(val_df):
         "final_prior_alpha": FS_CFG["prior_alpha"]
         }, allow_val_change=True)
 
-# %% Per-k evaluation
+# %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for k in sorted(test_df["k"].astype(int).unique()):
-    test_data_subset = test_df[test_df["k"] == k]
+for i in sorted(test_df["k"].astype(int).unique()):
+    test_data_subset = test_df[test_df["k"] == i]
     if len(test_data_subset) > 0:
         y_true = test_data_subset["next_activity"].tolist()
-        y_pred = [predict_topk(p, k=1)[0] for p in test_data_subset["prefix"]]
-        acc = accuracy_score(y_true, y_pred)
-        prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
-        k_vals.append(k); counts.append(len(test_data_subset))
-        accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
+        prefixes = test_data_subset["prefix"].tolist()  # these are lists of strings
+        y_pred = [predict_topk(p, k=1)[0] for p in prefixes]  # get top-1 prediction per prefix
+        
+        accuracy = accuracy_score(y_true, y_pred)
+        precision, recall, fscore, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(i)
+        counts.append(len(y_true))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
-avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_precision   = float(np.mean(precisions)) if precisions else float("nan")
-avg_recall   = float(np.mean(recalls))    if recalls    else float("nan")
+avg_f1 = float(np.mean(fscores)) if fscores else float("nan")
+avg_precision = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall = float(np.mean(recalls)) if recalls else float("nan")
 
 print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
 print(f"Average precision across all prefixes: {avg_precision:.4f}")
-print(f"Average recall across all prefixes:    {avg_recall:.4f}")
-
-# Micro (global) accuracy over all val prefixes
-# Total correct / total samples across the entire val set
-y_true_all = val_df["next_activity"].tolist()
-y_pred_all = [predict_topk(p, k=1)[0] for p in val_df["prefix"]]
-micro_acc  = accuracy_score(y_true_all, y_pred_all)
-print(f"[Val] Micro (global) accuracy: {micro_acc:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}") 
 
 # Micro (global) accuracy over all test prefixes
-# Total correct / total samples across the entire test set
-y_true_all = test_df["next_activity"].tolist()
-y_pred_all = [predict_topk(p, k=1)[0] for p in test_df["prefix"]]
-micro_acc  = accuracy_score(y_true_all, y_pred_all)
+y_true_val = val_df["next_activity"].tolist()
+prefixes_val = val_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_val]
+micro_acc_val = accuracy_score(y_true_val, y_pred_all)
+print(f"[VAL]  Micro (global) accuracy: {micro_acc_val:.4f}")
+
+# Micro (global) accuracy over all test prefixes
+y_true_test = test_df["next_activity"].tolist()
+prefixes_test = test_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_test]
+micro_acc = accuracy_score(y_true_test, y_pred_all)
 print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
+
+# %% Plots → disk
+os.makedirs(config["plots_dir"], exist_ok=True)
 
 # %% Top-k accuracy on the whole test set 
 def topk_accuracy(y_true, topk_labels_list, k=3):
@@ -531,26 +537,23 @@ wandb.log({
     "metrics/top5_acc": float(topk_accuracy(y_all, topk_all, k=5)),
 })
 
-# %% Plots
-plot_dir = RUN_CFG["plots_dir"]
-os.makedirs(plot_dir, exist_ok=True)
-
+# %% Acc/F1 vs k
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
     plt.title("Accuracy vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("Accuracy")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, fscores, marker="o", label="F1 (weighted)")
     plt.title("F1 vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("F1 (weighted)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
-print(f"Saved plots to: {plot_dir}")
+print(f"Saved plots to: {config['plots_dir']}")
 
 # %% Log per-k curves + macro averages
 wandb.log({
@@ -566,24 +569,61 @@ wandb.log({
     "metrics/avg_recall": avg_recall,
 })
 
+# %% Robust confusion matrix
+def _norm(s): return str(s).strip()
+
+y_true_lbl = [_norm(x) for x in test_df["next_activity"].tolist()]
+prefixes_test = test_df["prefix"].tolist()
+y_pred_lbl = [_norm(predict_topk(p, k=1)[0]) for p in prefixes_test]
+cm_labels = label_list
+
+try:
+    wandb.log({
+        "confusion_matrix": wandb.plot.confusion_matrix(
+            probs=None,
+            y_true=y_true_lbl,
+            preds=y_pred_lbl,
+            class_names=cm_labels
+        )
+    })
+except Exception as e:
+    print("W&B confusion_matrix failed, falling back to static image:", e)
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true_lbl, y_pred_lbl, labels=cm_labels)
+    plt.figure(figsize=(max(6, len(cm_labels)*0.6), max(5, len(cm_labels)*0.5)))
+    plt.imshow(cm, interpolation='nearest', aspect='auto')
+    plt.xlabel('Predicted'); plt.ylabel('True')
+    plt.xticks(ticks=range(len(cm_labels)), labels=cm_labels, rotation=90)
+    plt.yticks(ticks=range(len(cm_labels)), labels=cm_labels)
+    plt.tight_layout()
+    cm_path = os.path.join(config['plots_dir'], f"confusion_matrix_{ts}.png")
+    plt.savefig(cm_path, dpi=150); plt.close()
+    wandb.log({"cm_image": wandb.Image(cm_path)})
+
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
-table = wandb.Table(columns=["k","prefix","gold","pred","p_pred","top3","top3_p"])
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
+table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
+
 for _, r in sample.iterrows():
-    pred, topk, p_pred, topk_p = predict_topk(r["prefix"], k=3)
-    print("Prefix:", " → ".join(r["prefix"]))
-    print("Gold:  ", r["next_activity"])
+    toks = r["prefix"] if isinstance(r["prefix"], list) else str(r["prefix"]).split()
+    pred, top5, p_pred, top5_p = predict_topk(toks, k=5)
+    
+    prefix_pretty = " → ".join(toks)
+    gold = str(r["next_activity"])
+    
+    print("Prefix:", prefix_pretty)
+    print("Gold:  ", gold)
     print(f"Pred:  {pred} ({p_pred:.3f})")
-    print("Top-3:", topk)
+    print("Top-5:", top5)
     print("-"*60)
     table.add_data(
         r["k"],
-        " → ".join(r["prefix"]),
-        r["next_activity"],
+        prefix_pretty,
+        gold,
         pred,
-        float(p_pred),
-        ", ".join(topk),
-        ", ".join([f"{x:.3f}" for x in topk_p])
+        p_pred,
+        ", ".join(top5),
+        ", ".join([f"{x:.3f}" for x in top5_p])
     )
 wandb.log({"samples": table})
 
