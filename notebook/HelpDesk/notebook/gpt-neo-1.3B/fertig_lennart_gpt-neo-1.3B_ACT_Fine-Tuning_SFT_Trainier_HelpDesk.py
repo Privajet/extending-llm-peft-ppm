@@ -23,93 +23,104 @@ if cands:
     except OSError:
         pass
 
-import numpy as np, pandas as pd, torch
+import numpy as np
+import pandas as pd
+import torch
 from datetime import datetime
-import matplotlib; matplotlib.use("Agg")
+import matplotlib
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
+
 from typing import List, Dict
 from datasets import Dataset, DatasetDict
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
-
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from peft import LoraConfig, get_peft_model, PeftModel
 from trl import SFTTrainer, SFTConfig
 from torch.nn.utils.rnn import pad_sequence
 
-# %% Reproducibility & logging
-SEED=42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
-logging.basicConfig(level=logging.INFO, format="%(asctime)s %(levelname)s: %(message)s",
-                    handlers=[logging.StreamHandler(sys.stdout)])
-log=logging.getLogger("neo_act_ft")
-log.info("PyTorch %s | CUDA %s", torch.__version__, torch.cuda.is_available())
-if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
-
-# %%  W&B
+# %% 
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
+
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# %% Configs
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/gpt-neo-1.3B/FT/NT",
-    "unit": "days",
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FT/ACT",
+    "out_dir":                  f"/ceph/lfertig/Thesis/models/{DATASET}/gpt-neo-1.3B/ACT/act_ft_{ts}"
 }
 
 FT_CFG = {
     # model / runtime
-    "model_name": "EleutherAI/gpt-neo-1.3B",
-    "dtype": "fp16",              # set "fp32" if CPU-only
+    "model_name":               "EleutherAI/gpt-neo-1.3B",
+    "dtype":                    "fp16",                                 # set "fp32" if CPU-only
     "device": "auto",
     # prompt & context
-    "max_seq_len": 512,
-    "event_sep": " → ",
-    "prompt_tmpl_demo": (
-        "System: Predict the next activity. Reply with EXACTLY one label.\n"
-        "User: {trace}\n"
-        "Labels:\n{labels}\n"
-        "Assistant: {gold}"
-    ),
-    "prompt_tmpl_query": (
-        "System: Predict the next activity. Reply with EXACTLY one label.\n"
-        "User: {trace}\n"
-        "Labels:\n{labels}\n"
-        "Assistant:"
-    ),
-    "epochs": 3,
-    "micro_bsz": 1,
-    "grad_accum": 8,
-    "lr": 3e-4,
-    "warmup_ratio": 0.05,
-    "lora_r": 16, 
-    "lora_alpha": 64, 
-    "lora_dropout": 0.05, 
-    "out_dir": f"/ceph/lfertig/Thesis/models/gpt-neo-1.3B/ACT/act_ft_{ts}",
+    "max_seq_len":              512,
+    "event_sep":                " → ",
+    "prompt_tmpl_demo":         (
+                                "System: Predict the next activity. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "User: {trace}\n"
+                                "Labels:\n{labels}\n"
+                                "Assistant: {gold}"
+                                ),
+    "prompt_tmpl_query":        (
+                                "System: Predict the next activity. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "User: {trace}\n"
+                                "Labels:\n{labels}\n"
+                                "Assistant:"
+                                ),
+    "epochs":                   3,
+    "micro_bsz":                1,
+    "grad_accum":               8,
+    "lr":                       3e-4,
+    "warmup_ratio":             0.05,
+    "lora_r":                   16, 
+    "lora_alpha":               64, 
+    "lora_dropout":             0.05
 }
 
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+log = logging.getLogger(__name__)
+log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
+if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
+
 run = wandb.init(
-    project="gpt-neo-1.3B_ACT_FineTuning_HelpDesk",
+    project=f"gpt-neo-1.3B_ACT_FineTuning_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"neo_ft_act_{ts}",
-    config={"run_cfg": RUN_CFG, "FT_CFG": FT_CFG},
+    config=config,
+    resume="never",
+    force=True
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_test.csv")
 
 for d in (train_df, val_df, test_df):
-    if "next_act" in d.columns: d.rename(columns={"next_act":"next_activity"}, inplace=True)
-    d["prefix"] = d["prefix"].astype(str).str.split()
+    d.rename(columns={"next_act": "next_activity"}, inplace=True)
+    d["prefix"] = d["prefix"].astype(str).str.split() # convert space-separated strings to lists
 
-log.info("Train=%d  Val=%d  Test=%d", len(train_df), len(val_df), len(test_df))
+print(f"Train prefixes: {len(train_df)} - Validation prefixes: {len(val_df)} - Test prefixes: {len(test_df)}")
 wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df)})
 
 label_list = sorted(pd.concat([train_df["next_activity"], val_df["next_activity"], test_df["next_activity"]]).unique())
@@ -276,13 +287,10 @@ def _scores_for_labels(prefix, labels=label_list):
         L_ids = torch.tensor(LABEL_IDS[lb], dtype=torch.long)
         rows.append(torch.cat([P_ids, L_ids], dim=0))
         lens.append(len(L_ids))
-
     input_ids = pad_sequence(rows, batch_first=True, padding_value=tokenizer.pad_token_id).to(device)
     attention_mask = (input_ids != tokenizer.pad_token_id).long()
-
     with torch.no_grad():
         logits = gen_model(input_ids=input_ids, attention_mask=attention_mask).logits
-
     cut = P_ids.size(0)
     scores = []
     for i, lb in enumerate(labels):
@@ -315,42 +323,51 @@ def predict_next(prefix):
     """Convenience wrapper for top-1."""
     return predict_topk(prefix, k=1)[0]
 
-# %% Per-k evaluation
+# %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for k in sorted(test_df["k"].astype(int).unique()):
-    subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
-    y_true = subset["next_activity"].tolist()
-    y_pred = [predict_topk(p, k=1)[0] for p in subset["prefix"]]
-    acc = accuracy_score(y_true, y_pred)
-    prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
-    k_vals.append(k); counts.append(len(subset))
-    accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
+for i in sorted(test_df["k"].astype(int).unique()):
+    test_data_subset = test_df[test_df["k"] == i]
+    if len(test_data_subset) > 0:
+        y_true = test_data_subset["next_activity"].tolist()
+        prefixes = test_data_subset["prefix"].tolist()  # these are lists of strings
+        y_pred = [predict_topk(p, k=1)[0] for p in prefixes]  # get top-1 prediction per prefix
+        
+        accuracy = accuracy_score(y_true, y_pred)
+        precision, recall, fscore, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(i)
+        counts.append(len(y_true))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
-avg_acc = float(np.mean(accuracies)) if accuracies else float("nan")
-avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_p   = float(np.mean(precisions)) if precisions else float("nan")
-avg_r   = float(np.mean(recalls))    if recalls    else float("nan")
+avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
+avg_f1 = float(np.mean(fscores)) if fscores else float("nan")
+avg_precision = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall = float(np.mean(recalls)) if recalls else float("nan")
 
-print(f"Average accuracy across all prefixes:  {avg_acc:.4f}")
+print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
-print(f"Average precision across all prefixes: {avg_p:.4f}")
-print(f"Average recall across all prefixes:    {avg_r:.4f}")
+print(f"Average precision across all prefixes: {avg_precision:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}") 
 
-wandb.log({
-    "curves/k": k_vals,
-    "curves/counts": counts,
-    "curves/accuracy": accuracies,
-    "curves/f1": fscores,
-    "curves/precision": precisions,
-    "curves/recall": recalls,
-    "metrics/avg_accuracy": avg_acc,
-    "metrics/avg_f1": avg_f1,
-    "metrics/avg_precision": avg_p,
-    "metrics/avg_recall": avg_r,
-})
+# Micro (global) accuracy over all test prefixes
+y_true_val = val_df["next_activity"].tolist()
+prefixes_val = val_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_val]
+micro_acc_val = accuracy_score(y_true_val, y_pred_all)
+print(f"[VAL]  Micro (global) accuracy: {micro_acc_val:.4f}")
+
+# Micro (global) accuracy over all test prefixes
+y_true_test = test_df["next_activity"].tolist()
+prefixes_test = test_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_test]
+micro_acc = accuracy_score(y_true_test, y_pred_all)
+print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
+
+# %% Plots → disk
+os.makedirs(config["plots_dir"], exist_ok=True)
 
 # %% Top-k accuracy on the whole test set 
 def topk_accuracy(y_true, topk_labels_list, k=3):
@@ -364,48 +381,93 @@ wandb.log({
     "metrics/top5_acc": float(topk_accuracy(y_all, topk_all, k=5)),
 })
 
-# %% Plots
-plot_dir = RUN_CFG["plots_dir"]
-os.makedirs(plot_dir, exist_ok=True)
-
+# %% Acc/F1 vs k
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
     plt.title("Accuracy vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("Accuracy")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, fscores, marker="o", label="F1 (weighted)")
     plt.title("F1 vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("F1 (weighted)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
-print(f"Saved plots to: {plot_dir}")
+print(f"Saved plots to: {config['plots_dir']}")
+
+# %% Log per-k curves + macro averages
+wandb.log({
+    "curves/k": k_vals,
+    "curves/counts": counts,
+    "curves/accuracy": accuracies,
+    "curves/f1": fscores,
+    "curves/precision": precisions,
+    "curves/recall": recalls,
+    "metrics/avg_accuracy": avg_accuracy,
+    "metrics/avg_f1": avg_f1,
+    "metrics/avg_precision": avg_precision,
+    "metrics/avg_recall": avg_recall,
+})
+
+# %% Robust confusion matrix
+def _norm(s): return str(s).strip()
+
+y_true_lbl = [_norm(x) for x in test_df["next_activity"].tolist()]
+prefixes_test = test_df["prefix"].tolist()
+y_pred_lbl = [_norm(predict_topk(p, k=1)[0]) for p in prefixes_test]
+cm_labels = label_list
+
+try:
+    wandb.log({
+        "confusion_matrix": wandb.plot.confusion_matrix(
+            probs=None,
+            y_true=y_true_lbl,
+            preds=y_pred_lbl,
+            class_names=cm_labels
+        )
+    })
+except Exception as e:
+    print("W&B confusion_matrix failed, falling back to static image:", e)
+    from sklearn.metrics import confusion_matrix
+    cm = confusion_matrix(y_true_lbl, y_pred_lbl, labels=cm_labels)
+    plt.figure(figsize=(max(6, len(cm_labels)*0.6), max(5, len(cm_labels)*0.5)))
+    plt.imshow(cm, interpolation='nearest', aspect='auto')
+    plt.xlabel('Predicted'); plt.ylabel('True')
+    plt.xticks(ticks=range(len(cm_labels)), labels=cm_labels, rotation=90)
+    plt.yticks(ticks=range(len(cm_labels)), labels=cm_labels)
+    plt.tight_layout()
+    cm_path = os.path.join(config['plots_dir'], f"confusion_matrix_{ts}.png")
+    plt.savefig(cm_path, dpi=150); plt.close()
+    wandb.log({"cm_image": wandb.Image(cm_path)})
 
 # %% Samples table
-sep = FT_CFG.get("event_sep", " → ")
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
-table = wandb.Table(columns=["k","prefix","gold","pred","p_pred","top3","top3_p"])
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
+table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
+
 for _, r in sample.iterrows():
-    pred, topk, p_pred, topk_p = predict_topk(r["prefix"], k=3)
-    prefix_str = sep.join(r["prefix"])
-    gold = r["next_activity"]
-    print("Prefix:", prefix_str)
+    toks = r["prefix"] if isinstance(r["prefix"], list) else str(r["prefix"]).split()
+    pred, top5, p_pred, top5_p = predict_topk(toks, k=5)
+    
+    prefix_pretty = " → ".join(toks)
+    gold = str(r["next_activity"])
+    
+    print("Prefix:", prefix_pretty)
     print("Gold:  ", gold)
     print(f"Pred:  {pred} ({p_pred:.3f})")
-    print("Top-3:", topk)
+    print("Top-5:", top5)
     print("-"*60)
     table.add_data(
-        int(r["k"]),
-        prefix_str,
+        r["k"],
+        prefix_pretty,
         gold,
         pred,
-        float(p_pred),
-        ", ".join(topk),
-        ", ".join(f"{x:.3f}" for x in topk_p),
+        p_pred,
+        ", ".join(top5),
+        ", ".join([f"{x:.3f}" for x in top5_p])
     )
 wandb.log({"samples": table})
 

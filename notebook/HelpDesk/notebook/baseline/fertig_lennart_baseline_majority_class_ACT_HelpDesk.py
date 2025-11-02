@@ -77,18 +77,20 @@ print(f"Majority next activity (train): {majority_label}  (p={p_majority:.3f})")
 # %%
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for i in range(int(max_case_length)):
+for i in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == i]
     if len(subset) > 0:
         y_true = subset["next_act"].tolist()
         y_pred = [majority_label] * len(y_true)
 
         accuracy = metrics.accuracy_score(y_true, y_pred)
-        precision, recall, fscore, _ = metrics.precision_recall_fscore_support(
-            y_true, y_pred, average="weighted", zero_division=0
-        )
-        k_vals.append(i); counts.append(len(y_true))
-        accuracies.append(accuracy); fscores.append(fscore); precisions.append(precision); recalls.append(recall)
+        precision, recall, fscore, _ = metrics.precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(i)
+        counts.append(len(y_true))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")

@@ -212,7 +212,7 @@ def predict_next(prefix_str: str, topk=5):
 # %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for i in range(int(max_case_length)):
+for i in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == i]
     if len(subset) > 0:
         test_token_x, test_token_y = data_loader.prepare_data_next_activity(subset, x_word_dict, y_word_dict, max_case_length)
@@ -222,7 +222,10 @@ for i in range(int(max_case_length)):
         
         k_vals.append(i)
         counts.append(len(test_token_y))
-        accuracies.append(accuracy); fscores.append(fscore); precisions.append(precision); recalls.append(recall)
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
 avg_f1 = float(np.mean(fscores)) if fscores else float("nan")

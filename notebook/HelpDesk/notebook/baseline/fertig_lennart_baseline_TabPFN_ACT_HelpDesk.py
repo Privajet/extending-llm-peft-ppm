@@ -171,16 +171,20 @@ def predict_next(prefix_str: str, topk=5):
 # %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for i in range(int(max_case_length)):
-    test_subset = test_df[test_df["k"] == i]
-    if len(test_subset) == 0:
-        continue
-    X_k, y_k = data_loader.prepare_data_next_activity(test_subset, x_word_dict, y_word_dict, max_case_length)
-    y_pred_k, _ = predict_labels(model, X_k)
-    acc = metrics.accuracy_score(y_k, y_pred_k)
-    prec, rec, f1, _ = metrics.precision_recall_fscore_support(y_k, y_pred_k, average="weighted", zero_division=0)
-    k_vals.append(i); counts.append(len(y_k))
-    accuracies.append(acc); fscores.append(f1); precisions.append(prec); recalls.append(rec)
+for i in sorted(test_df["k"].astype(int).unique()):
+    subset = test_df[test_df["k"] == i]
+    if len(subset) > 0:
+        test_token_x, test_token_y = data_loader.prepare_data_next_activity(subset, x_word_dict, y_word_dict, max_case_length)
+        y_pred, _ = predict_labels(model, test_token_x)
+        
+        accuracy = metrics.accuracy_score(test_token_y, y_pred)
+        precision, recall, fscore, _ = metrics.precision_recall_fscore_support(test_token_y, y_pred, average="weighted", zero_division=0)
+        k_vals.append(i)
+        counts.append(len(test_token_y))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
 avg_f1 = float(np.mean(fscores)) if fscores else float("nan")

@@ -211,15 +211,10 @@ def predict_delta_days(prefix_str: str, recent_time=0.0, latest_time=0.0, time_p
 # %% Per-k evaluation (metrics in days)
 k_vals, maes, mses, rmses, counts = [], [], [], [], []
 
-for k in range(1, int(max_case_length) + 1):
-    subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
-
-    sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(
-        subset, x_word_dict, max_case_length,
-        time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False
-    )
+for i in sorted(test_df["k"].astype(int).unique()):
+    subset = test_df[test_df["k"] == i]
+    if len(subset) > 0:
+        sub_tok_x, sub_time_x, sub_y, _, _ = data_loader.prepare_data_next_time(subset, x_word_dict, max_case_length, time_scaler=time_scaler, y_scaler=y_scaler, shuffle=False)
 
     y_pred_scaled = model.predict([sub_tok_x, sub_time_x], verbose=0)
     y_true_days   = y_scaler.inverse_transform(sub_y)
@@ -229,9 +224,11 @@ for k in range(1, int(max_case_length) + 1):
     mse  = metrics.mean_squared_error(y_true_days, y_pred_days)
     rmse = float(np.sqrt(mse))
 
-    k_vals.append(k)
+    k_vals.append(i)
     counts.append(len(subset))
-    maes.append(mae); mses.append(mse); rmses.append(rmse)
+    maes.append(mae)
+    mses.append(mse)
+    rmses.append(rmse)
 
 # Macro averages across k-bins
 avg_mae  = float(np.mean(maes))  if maes  else float("nan")
