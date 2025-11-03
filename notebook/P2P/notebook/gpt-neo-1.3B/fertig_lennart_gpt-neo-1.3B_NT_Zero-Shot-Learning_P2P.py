@@ -37,7 +37,7 @@ api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% 
-DATASET = "HelpDesk"
+DATASET = "P2P"
 
 config = {
     # bookkeeping
@@ -366,7 +366,6 @@ wandb.config.update({
     "final_prior_alpha": ZS_CFG["prior_alpha"],
     "final_cond_alpha": ZS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
-    "unit": config["unit"],
 }, allow_val_change=True)
 
 # %% Per-k evaluation (days)
