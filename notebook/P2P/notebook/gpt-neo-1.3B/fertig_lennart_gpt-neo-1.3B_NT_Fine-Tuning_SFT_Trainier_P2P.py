@@ -46,7 +46,7 @@ wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
 # %% 
-DATASET = "HelpDesk"
+DATASET = "P2P"
 
 config = {
     # bookkeeping

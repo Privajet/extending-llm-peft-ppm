@@ -43,13 +43,73 @@ from collections import OrderedDict
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% Repro + logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
+# %% W&B
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
 
-logging.basicConfig(
-    level=logging.INFO,
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FS/NT",
+    "unit":                     "days"
+}
+
+FS_CFG = {
+    # model / runtime
+    "family":                   "neo",
+    "model_name":               "EleutherAI/gpt-neo-1.3B",
+    "dtype":                    "fp16",                                 # "fp32" if CPU-only
+    "device":                   "auto",
+    # prompt & context (few-shot)
+    "n_shots":                  5,                                      # grid: [3,5]
+    "ctx_events":               20,
+    "max_demo_events":          10,                                     # grid: [6,8,10]
+    "event_sep":                " → ",
+    "prompt_tmpl_demo":         (
+                                "Trace: {trace}\n"
+                                "Predict the time until the next event. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Labels:\n{labels}\n"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "Predict the time until the next event. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Labels:\n{labels}\n"
+                                "Answer:"
+                                ),
+    # scoring & calibration
+    "add_eos_after_label":      True,
+    "length_norm":              True,
+    "temperature":              0.9,
+    "use_class_prior":          True,
+    "prior_alpha":              0.25,
+    # optional conditional prior p(bin | last_act)
+    "use_cond_prior_by_last_act": True,
+    "cond_alpha":               0.15,
+    # validation grids
+    "do_val_tune":              True,
+    "grid_taus":                [0.75, 0.9, 1.0, 1.1],
+    "grid_alphas":              [0.0, 0.15, 0.25, 0.35],
+    "grid_cond":                [0.0, 0.1, 0.15, 0.25],
+    "ctx_events_grid":          [8, 12, 16],
+    # binning
+    "num_bins":                 20,
+    "min_bin_count":            5,
+    "clip_low_high":            (1e-6, None),
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -57,76 +117,20 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %% W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# %% Configs
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/gpt-neo-1.3B/FT/NT",
-    "unit": "days",
-}
-
-FS_CFG = {
-    # model / runtime
-    "family": "neo",
-    "model_name": "EleutherAI/gpt-neo-1.3B",
-    "dtype": "fp16",      # "fp32" if CPU-only
-    "device": "auto",
-    # prompt & context (few-shot)
-    "n_shots": 5,         # grid: [3,5]
-    "ctx_events": 20,
-    "max_demo_events": 10,# grid: [6,8,10]
-    "event_sep": " → ",
-    "prompt_tmpl_demo": (
-        "Trace: {trace}\n"
-        "Choose the next time from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer: {gold}\n\n"
-    ),
-    "prompt_tmpl_query": (
-        "Trace: {trace}\n"
-        "Choose the next time from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer:"
-    ),
-    # scoring & calibration
-    "add_eos_after_label": True,
-    "length_norm": True,
-    "temperature": 0.9,
-    "use_class_prior": True,
-    "prior_alpha": 0.25,
-    # optional conditional prior p(bin | last_act)
-    "use_cond_prior_by_last_act": True,
-    "cond_alpha": 0.15,
-    # validation grids
-    "do_val_tune": True,
-    "grid_taus":   [0.75, 0.9, 1.0, 1.1],
-    "grid_alphas": [0.0, 0.15, 0.25, 0.35],
-    "grid_cond":   [0.0, 0.1, 0.15, 0.25],
-    "ctx_events_grid": [8, 12, 16],
-    # binning
-    "num_bins": 20,
-    "min_bin_count": 5,
-    "clip_low_high": (1e-6, None),
-}
-
 run = wandb.init(
-    project="gpt-neo-1.3B_NT_FewShot_HelpDesk",
+    project=f"gpt-neo-1.3B_NT_FewShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"neo_icl_nt_{ts}",
-    config={"run_cfg": RUN_CFG, "fs_cfg": FS_CFG},
+    name=f"neo_fs_nt_{ts}",
+    config=config,
+    resume="never",
+    force=True
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_time_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_time_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_time_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_time_test.csv")
 
 def to_days(series): return series.astype(float)
 
@@ -408,7 +412,7 @@ wandb.config.update({
     "final_prior_alpha": FS_CFG["prior_alpha"],
     "final_cond_alpha": FS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
-    "unit": RUN_CFG["unit"],
+    "unit": config["unit"],
 }, allow_val_change=True)
 
 # %% Per-k evaluation (days)
@@ -451,7 +455,7 @@ if len(y_pred_bins):
     wandb.log({"metrics/top1_bin_acc": float(top1_bin_acc)})
 
 # %% Plots → disk
-plot_dir = RUN_CFG["plots_dir"]
+plot_dir = config["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
 if len(k_vals):
@@ -490,7 +494,7 @@ wandb.log({
 })
 
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
 tab = wandb.Table(columns=["k","prefix","last_act","gold_days","pred_days","top_bins","top_probs"])
 for _, r in sample.iterrows():
     pred_days, top_bins, top_probs = predict_time(r["prefix"], r["last_act"], return_topk=3)

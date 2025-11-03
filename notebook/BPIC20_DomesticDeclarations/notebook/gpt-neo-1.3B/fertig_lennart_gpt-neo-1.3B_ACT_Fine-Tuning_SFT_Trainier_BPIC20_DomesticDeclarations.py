@@ -224,7 +224,7 @@ collator = CompletionOnlyCollator(tokenizer)
 
 # %%
 sft_cfg = SFTConfig(
-    output_dir=FT_CFG["out_dir"],
+    output_dir=config["out_dir"],
     num_train_epochs=FT_CFG["epochs"],
     learning_rate=FT_CFG["lr"],
     per_device_train_batch_size=FT_CFG["micro_bsz"],
@@ -259,7 +259,7 @@ trainer = SFTTrainer(
 
 # %% Train & save
 trainer.train()
-save_dir=FT_CFG["out_dir"]
+save_dir=config["out_dir"]
 trainer.model.save_pretrained(save_dir); tokenizer.save_pretrained(save_dir)
 log.info("Saved adapters & tokenizer to %s", save_dir)
 

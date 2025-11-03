@@ -1,9 +1,15 @@
-# %% Zero-shot Next-Time (NT) with GPT-Neo-1.3B — quantile bins + priors
-# - turn regression (time-to-next-event) into classification over time bins
-# - strict label scoring via log-likelihood of [prompt + time-bin-label + EOS]
-# - length normalization, temperature, and priors (global + optional conditional by last activity)
-# - short, recent context (last-N events), left truncation with prompt budget
-# - per-k MAE/RMSE and top-1 bin accuracy, W&B logging (prompt + config)
+# %% Few-shot (ICL) Next-Time (NT) with GPT-Neo-1.3B — discretized regression via label scoring
+# - Continuous NT prediction framed as classification over quantile bins (days), then decoded to a time via expected value of bin midpoints.
+# - Few-shot in-context learning: TF-IDF retrieval with MMR for diverse demos (from TRAIN only; no leakage).
+# - Strict label scoring with GPT-Neo: log-likelihood of [prompt + bin_label (+ EOS)] with length normalization.
+# - Short, recent context (last-N events) and deterministic event separator for stable prompts.
+# - Calibration knobs: temperature, global class prior over bins, and conditional prior p(bin | last_act).
+# - Binning: quantile edges on TRAIN with min-bin-count enforcement and optional clipping of extremes.
+# - Validation sweep on VAL (τ / prior_alpha / cond_alpha / ctx_events) to minimize MAE.
+# - Decoding: probability over bins → expected days; also report top-k bins (interpretability).
+# - Evaluation: MAE / MSE / RMSE vs. prefix length (k); optional top-1 bin accuracy (coarse).
+# - Efficiency: cache tokenized prompt IDs; prebuild label tensors on device; left truncation to respect context budget.
+# - W&B: logs configs, bin edges/labels, metrics, curves, and qualitative samples.
 
 import os, sys, glob, ctypes, random, logging
 os.environ["MPLBACKEND"] = "Agg"
@@ -28,56 +34,70 @@ import matplotlib
 matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
+from sklearn.feature_extraction.text import TfidfVectorizer
+from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score
+
+from collections import OrderedDict
+
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% 
+# %% W&B
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
 
 # %% 
-DATASET = "HelpDesk"
+DATASET = "P2P"
 
 config = {
     # bookkeeping
     "dataset":                  DATASET,
-    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/NT"
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FS/NT"
 }
 
-ZS_CFG = {
+FS_CFG = {
     # model / runtime
+    "family":                   "neo",
     "model_name":               "EleutherAI/gpt-neo-1.3B",
     "dtype":                    "fp16",                                 # "fp32" if CPU-only
     "device":                   "auto",
-    # prompt & context
-    "ctx_events":               12,                                     # last N events for context
+    # prompt & context (few-shot)
+    "n_shots":                  5,                                      # grid: [3,5]
+    "ctx_events":               20,
+    "max_demo_events":          10,                                     # grid: [6,8,10]
     "event_sep":                " → ",
-    "prompt_tmpl":              (
+    "prompt_tmpl_demo":         (
                                 "Trace: {trace}\n"
                                 "Predict the time until the next event. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
-                                "Time bins (in days):\n{labels}\n"
+                                "Labels:\n{labels}\n"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "Predict the time until the next event. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Labels:\n{labels}\n"
                                 "Answer:"
                                 ),
-    "add_eos_after_label":      True,
-    # time binning (NT-specific)
-    "num_bins":                 20,                                     # number of quantile bins (e.g., 10/20/30)
-    "min_bin_count":            5,                                      # safety for degenerate splits
-    "clip_low_high":            [1e-6, None],                           # guard tiny zeros to avoid 0-width bins
     # scoring & calibration
+    "add_eos_after_label":      True,
     "length_norm":              True,
-    "temperature":              0.85,                                   # tuned on val
-    "use_class_prior":          True,                                   # global bin prior from TRAIN
-    "prior_alpha":              0.25,                                   # strength of global prior
-    # optional conditional prior by last activity (train-only, no leakage)
+    "temperature":              0.9,
+    "use_class_prior":          True,
+    "prior_alpha":              0.25,
+    # optional conditional prior p(bin | last_act)
     "use_cond_prior_by_last_act": True,
-    "cond_alpha":               0.35,                                   # strength; 0.2–0.6 often works; tune on val
-    # tiny validation sweep over a few zero-shot knobs
+    "cond_alpha":               0.15,
+    # validation grids
     "do_val_tune":              True,
-    "grid_taus":                [0.7, 0.85, 1.0, 1.2],
-    "grid_alphas":              [0.0, 0.15, 0.25, 0.4],
-    "grid_cond":                [0.0, 0.25, 0.35, 0.5],                 # cond_alpha candidates
-    "ctx_events_grid":          [8, 12, 16]
+    "grid_taus":                [0.75, 0.9, 1.0, 1.1],
+    "grid_alphas":              [0.0, 0.15, 0.25, 0.35],
+    "grid_cond":                [0.0, 0.1, 0.15, 0.25],
+    "ctx_events_grid":          [8, 12, 16],
+    # binning
+    "num_bins":                 20,
+    "min_bin_count":            5,
+    "clip_low_high":            (1e-6, None),
 }
 
 # %%
@@ -98,9 +118,9 @@ if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
-    project=f"gpt-neo-1.3B_NT_ZeroShot_{config['dataset']}",
+    project=f"gpt-neo-1.3B_NT_FewShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"neo_zeroshot_nt_{ts}",
+    name=f"neo_fs_nt_{ts}",
     config=config,
     resume="never",
     force=True
@@ -111,8 +131,7 @@ train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed
 val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_time_val.csv")
 test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_time_test.csv")
 
-def to_days(series):
-    return series.astype(float)
+def to_days(series): return series.astype(float)
 
 for d in (train_df, val_df, test_df):
     d["prefix"] = d["prefix"].astype(str).str.split()
@@ -129,8 +148,7 @@ wandb.log({"n_train": len(train_df), "n_val": len(val_df), "n_test": len(test_df
 def make_bins(train_series, num_bins=20, min_bin_count=5, clip_low=1e-6, clip_high=None):
     def _quantile(x, qs):
         try:    return np.quantile(x, qs, method="nearest")
-        except TypeError:
-                return np.quantile(x, qs, interpolation="nearest")
+        except TypeError: return np.quantile(x, qs, interpolation="nearest")
 
     x = train_series.values.astype(np.float64)
     if clip_low  is not None: x = np.maximum(x, clip_low)
@@ -138,35 +156,25 @@ def make_bins(train_series, num_bins=20, min_bin_count=5, clip_low=1e-6, clip_hi
 
     qs = np.linspace(0, 1, num_bins+1)
     edges = np.unique(_quantile(x, qs))
-    if len(edges) < 3:  # fallback if quantiles collapse
+    if len(edges) < 3:
         lo, hi = x.min(), x.max()
         if hi <= lo: hi = lo + 1e-6
         edges = np.exp(np.linspace(np.log(lo), np.log(hi), num_bins+1))
 
     def enforce_min_count(edges, x_train, min_bin_count):
-        if min_bin_count is None or min_bin_count <= 1:
-            return edges
+        if min_bin_count is None or min_bin_count <= 1: return edges
         edges = edges.copy()
         while len(edges) > 2:
             bin_idx = np.digitize(x_train, edges, right=True) - 1
             counts = np.bincount(np.clip(bin_idx, 0, len(edges)-2), minlength=len(edges)-1)
-            if counts.min() >= min_bin_count:
-                break
+            if counts.min() >= min_bin_count: break
             i = int(np.argmin(counts))
-            # merge towards the smaller neighbor
-            if i == 0:
-                edges = np.delete(edges, i+1)
-            elif i == len(counts)-1:
-                edges = np.delete(edges, i)
-            else:
-                if counts[i+1] <= counts[i-1]:
-                    edges = np.delete(edges, i+1)
-                else:
-                    edges = np.delete(edges, i)
+            if i == 0: edges = np.delete(edges, i+1)
+            elif i == len(counts)-1: edges = np.delete(edges, i)
+            else: edges = np.delete(edges, i+1 if counts[i+1] <= counts[i-1] else i)
         return edges
 
     edges = enforce_min_count(edges, x, min_bin_count)
-
     mids, labels = [], []
     for i in range(len(edges)-1):
         L, R = float(edges[i]), float(edges[i+1])
@@ -176,46 +184,40 @@ def make_bins(train_series, num_bins=20, min_bin_count=5, clip_low=1e-6, clip_hi
 
 BIN_EDGES, BIN_MIDS, BIN_LABELS = make_bins(
     train_df["nt_days"],
-    num_bins=ZS_CFG["num_bins"],
-    min_bin_count=ZS_CFG["min_bin_count"],
-    clip_low=ZS_CFG["clip_low_high"][0],
-    clip_high=ZS_CFG["clip_low_high"][1]
+    num_bins=FS_CFG["num_bins"],
+    min_bin_count=FS_CFG["min_bin_count"],
+    clip_low=FS_CFG["clip_low_high"][0],
+    clip_high=FS_CFG["clip_low_high"][1]
 )
 n_bins = len(BIN_LABELS)
 BIN_INDEX = {lbl: i for i, lbl in enumerate(BIN_LABELS)}
 COND_DEFAULT = np.log(np.ones(n_bins, dtype=np.float32) / n_bins)
 
 def digitize_nt(x):
-    # assign to (L,R] bins (np.digitize returns index in 1..len(edges)-1)
     idx = np.digitize(x, BIN_EDGES, right=True) - 1
-    # clamp to valid range
     return int(np.clip(idx, 0, n_bins-1))
 
-# Assign true bins (for evaluation) — no leakage, just mapping with train edges
 for frame in (train_df, val_df, test_df):
     frame["bin_idx"] = frame["nt_days"].apply(digitize_nt)
     frame["bin_label"] = frame["bin_idx"].apply(lambda i: BIN_LABELS[i])
 
-# Priors (global): train frequency of bins
+# Priors
 train_bin_freq = train_df["bin_idx"].value_counts(normalize=True).reindex(range(n_bins)).fillna(1e-8)
 LOG_PRIOR = np.log(train_bin_freq.values.astype(np.float32))
 
-# Optional conditional prior by last activity: p(bin | last_act) estimated on TRAIN
 COND_LOG_PRIOR = {}
-if ZS_CFG["use_cond_prior_by_last_act"]:
-    grp = train_df.groupby("last_act")["bin_idx"]
-    for act, series in grp:
+if FS_CFG["use_cond_prior_by_last_act"]:
+    for act, series in train_df.groupby("last_act")["bin_idx"]:
         freq = series.value_counts(normalize=True).reindex(range(n_bins)).fillna(1e-8).values.astype(np.float32)
         COND_LOG_PRIOR[act] = np.log(freq)
 
 # %% Model / Tokenizer
-MODEL_NAME = ZS_CFG["model_name"]
-DTYPE = torch.float16 if (torch.cuda.is_available() and ZS_CFG["dtype"]=="fp16") else torch.float32
-DEVICE = torch.device("cuda" if (torch.cuda.is_available() and ZS_CFG["device"]=="auto") else "cpu")
+MODEL_NAME = FS_CFG["model_name"]
+DTYPE = torch.float16 if (torch.cuda.is_available() and FS_CFG["dtype"]=="fp16") else torch.float32
+DEVICE = torch.device("cuda" if (torch.cuda.is_available() and FS_CFG["device"]=="auto") else "cpu")
 
 tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, padding_side="right")
-if tokenizer.pad_token_id is None:
-    tokenizer.pad_token = tokenizer.eos_token
+if tokenizer.pad_token_id is None: tokenizer.pad_token = tokenizer.eos_token
 tokenizer.truncation_side = "left"
 eos_id = tokenizer.eos_token_id
 
@@ -223,58 +225,108 @@ model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME, low_cpu_mem_usage=True, torch_dtype=DTYPE
 ).to(DEVICE).eval()
 
-# Retrieves the model’s max sequence length (2048 for GPT-Neo). The guard handles exotic sentinel values some tokenizers expose.
 MAX_TOK = getattr(tokenizer, "model_max_length", 2048)
-if MAX_TOK is None or MAX_TOK > 10**8:  # guard weird sentinel values
-    MAX_TOK = 2048
+if MAX_TOK is None or MAX_TOK > 108: MAX_TOK = 2048
 
-# Label tokenization: add a leading space; optionally append EOS
 LABEL_IDS = {
-    lbl: tokenizer(" " + lbl, add_special_tokens=False).input_ids + ([eos_id] if ZS_CFG["add_eos_after_label"] else [])
+    lbl: tokenizer(" " + lbl, add_special_tokens=False).input_ids + ([eos_id] if FS_CFG["add_eos_after_label"] else [])
     for lbl in BIN_LABELS
 }
-LABEL_TENSORS = {
-    lbl: torch.tensor(LABEL_IDS[lbl], dtype=torch.long, device=DEVICE)
-    for lbl in BIN_LABELS
-}
+LABEL_TENSORS = {lbl: torch.tensor(ids, dtype=torch.long, device=DEVICE) for lbl, ids in LABEL_IDS.items()}
 
 max_label_len = max(len(ids) for ids in LABEL_IDS.values())
-PROMPT_BUDGET = MAX_TOK - (max_label_len + 8)
+PROMPT_BUDGET = max(256, MAX_TOK - (max_label_len + 8))
 
-# Prompt builder
+# %% Few-shot retrieval (TF-IDF + MMR)
+def _seq_str(pfx): return " ".join(pfx)
+train_df["prefix_str"] = train_df["prefix"].apply(_seq_str)
+tfidf = TfidfVectorizer().fit(train_df["prefix_str"])
+train_tfidf = tfidf.transform(train_df["prefix_str"])
+
+def retrieve_demos(prefix, n_shots, max_demo_events, mmr_lambda=0.5):
+    q = tfidf.transform([_seq_str(prefix)])
+    sims_q = cosine_similarity(q, train_tfidf).ravel()
+    short_idx = np.argsort(sims_q)[-n_shots*10:][::-1]
+
+    chosen, chosen_vecs = [], []
+    for _ in range(n_shots):
+        best_idx, best_mmr = None, -1e9
+        for idx in short_idx:
+            if any(idx == c for _, _, c in chosen): continue
+            v = train_tfidf[idx]; rel = sims_q[idx]
+            div = 0.0 if not chosen_vecs else max(cosine_similarity(v, vv).ravel()[0] for vv in chosen_vecs)
+            mmr = mmr_lambda * rel - (1.0 - mmr_lambda) * div
+            if mmr > best_mmr: best_mmr, best_idx = mmr, idx
+        if best_idx is None: break
+        ex = train_df.iloc[best_idx]
+        chosen.append((ex["prefix"][-max_demo_events:], ex["bin_label"], best_idx))
+        chosen_vecs.append(train_tfidf[best_idx])
+
+    if not chosen:
+        topk = np.argsort(sims_q)[-n_shots*2:][::-1]
+        out, seen = [], set()
+        for ridx in topk:
+            ex = train_df.iloc[ridx]; g = ex["bin_label"]
+            if g in seen: continue
+            out.append((ex["prefix"][-max_demo_events:], g))
+            seen.add(g)
+            if len(out) >= n_shots: break
+        return out
+
+    return [(p, g) for p, g, _ in chosen]
+
+# %% FS prompt building + cache
 labels_for_prompt = "\n".join(BIN_LABELS)
-def build_prompt(prefix_tokens):
-    t = prefix_tokens[-ZS_CFG["ctx_events"]:]
-    trace = ZS_CFG["event_sep"].join(t)
-    return ZS_CFG["prompt_tmpl"].format(trace=trace, labels=labels_for_prompt)
+def _trace_str(seq): return FS_CFG["event_sep"].join(seq)
 
-# cache ONLY tokenized prompt IDs on DEVICE (like your FS refactor)
-# _PROMPT_CACHE memoizes tokenized prompt IDs keyed by the exact last-N events (tuple). This avoids repeated tokenization and host→device copies.
-_PROMPT_CACHE = {}  # key -> 1D LongTensor on DEVICE
+def build_fs_prompt(prefix, demos):
+    labs_txt = labels_for_prompt
+    blocks = []
+    for p_demo, gold in demos:
+        blocks.append(FS_CFG["prompt_tmpl_demo"].format(
+            trace=_trace_str(p_demo[-FS_CFG["max_demo_events"]:]),
+            labels=labs_txt,
+            gold=gold
+        ))
+    q = prefix[-FS_CFG["ctx_events"]:]
+    blocks.append(FS_CFG["prompt_tmpl_query"].format(trace=_trace_str(q), labels=labs_txt))
+    return "".join(blocks)
 
-def get_prompt_ids(prefix_tokens):
-    key = tuple(prefix_tokens[-ZS_CFG["ctx_events"]:])
+_PROMPT_CACHE = OrderedDict()
+_PROMPT_CACHE_CAP = 2048
+
+def _prompt_cache_key(prefix, demos):
+    q_tail = tuple(prefix[-FS_CFG["ctx_events"]:])
+    demos_key = tuple((tuple(p), g) for (p, g) in demos)
+    return (q_tail, demos_key)
+
+def get_prompt_ids(prefix, demos):
+    key = _prompt_cache_key(prefix, demos)
     if key in _PROMPT_CACHE:
+        _PROMPT_CACHE.move_to_end(key)
         return _PROMPT_CACHE[key]
-    prompt = build_prompt(prefix_tokens)
+    prompt = build_fs_prompt(prefix, demos)
     P = tokenizer(prompt, add_special_tokens=False, truncation=True, max_length=PROMPT_BUDGET).input_ids
     P_ids = torch.tensor(P, dtype=torch.long, device=DEVICE)
     _PROMPT_CACHE[key] = P_ids
+    if len(_PROMPT_CACHE) > _PROMPT_CACHE_CAP:
+        _PROMPT_CACHE.popitem(last=False)
     return P_ids
 
-# Log exact prompt & bins
+# Log exact templates & bins
 wandb.config.update({
-    "prompt_template": ZS_CFG["prompt_tmpl"],
+    "prompt_template_demo": FS_CFG["prompt_tmpl_demo"],
+    "prompt_template_query": FS_CFG["prompt_tmpl_query"],
     "n_bins": n_bins,
     "bin_edges": [float(x) for x in BIN_EDGES],
     "bin_labels": BIN_LABELS
 }, allow_val_change=True)
 
-# %% Scoring (batch over candidate bins)
+# %% Scoring over bins (with demos)
 @torch.no_grad()
 def score_bins(prefix_tokens, last_act=None):
-    # reuse cached prompt IDs
-    P_ids = get_prompt_ids(prefix_tokens)
+    demos = retrieve_demos(prefix_tokens, FS_CFG["n_shots"], FS_CFG["max_demo_events"])
+    P_ids = get_prompt_ids(prefix_tokens, demos)
 
     rows, lens = [], []
     for lbl in BIN_LABELS:
@@ -284,7 +336,7 @@ def score_bins(prefix_tokens, last_act=None):
 
     pad_id = tokenizer.pad_token_id
     input_ids = torch.nn.utils.rnn.pad_sequence(rows, batch_first=True, padding_value=pad_id)
-    attn = (input_ids != pad_id).long()
+    attn = (input_ids != pad_id)
     logits = model(input_ids=input_ids, attention_mask=attn).logits.float()
 
     cut = P_ids.size(0)
@@ -293,55 +345,48 @@ def score_bins(prefix_tokens, last_act=None):
         lp = torch.log_softmax(logits[i, cut-1:cut-1+Llen, :], dim=-1)
         tgt = LABEL_TENSORS[BIN_LABELS[i]]
         s = lp.gather(-1, tgt.unsqueeze(-1)).sum()
-        if ZS_CFG["length_norm"] and Llen > 0:
+        if FS_CFG["length_norm"] and Llen > 0:
             s = s / Llen
         ll.append(float(s))
     scores = np.array(ll, dtype=np.float32)
 
-    # temperature
-    scores = scores / max(1e-6, ZS_CFG["temperature"])
-
-    # global prior
-    if ZS_CFG["use_class_prior"]:
-        scores = scores + ZS_CFG["prior_alpha"] * LOG_PRIOR
-
-    # conditional prior
-    if ZS_CFG["use_cond_prior_by_last_act"]:
-        scores = scores + ZS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
+    # temperature + priors
+    scores = scores / max(1e-6, FS_CFG["temperature"])
+    if FS_CFG["use_class_prior"]:
+        scores = scores + FS_CFG["prior_alpha"] * LOG_PRIOR
+    if FS_CFG["use_cond_prior_by_last_act"]:
+        scores = scores + FS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
 
     # softmax → probs
-    m = np.max(scores)
-    probs = np.exp(scores - m); s = probs.sum()
+    m = np.max(scores); probs = np.exp(scores - m); s = probs.sum()
     probs = probs / s if s > 0 else probs
     return scores, probs
 
 def predict_time(prefix_tokens, last_act=None, return_topk=3):
     scores, probs = score_bins(prefix_tokens, last_act)
     idx_sorted = np.argsort(scores)[::-1]
-    # point estimate from probability-weighted midpoints
     pred_days = float(np.sum(probs * BIN_MIDS))
-    # top-k bins for analysis
     k = min(return_topk, n_bins)
     top_idx = idx_sorted[:k]
-    top_bins = [BIN_LABELS[i] for i in top_idx]
+    top_bins  = [BIN_LABELS[i] for i in top_idx]
     top_probs = [float(probs[i]) for i in top_idx]
     return pred_days, top_bins, top_probs
 
 # %% Tiny validation sweep (optional) to tune tau/prior/cond
 def tune_on_val():
-    if not ZS_CFG["do_val_tune"] or len(val_df) == 0:
+    if not FS_CFG["do_val_tune"] or len(val_df) == 0:
         return
     y_true = val_df["nt_days"].values.astype(np.float64)
 
-    best = (np.inf, ZS_CFG["temperature"], ZS_CFG["prior_alpha"], ZS_CFG["cond_alpha"], ZS_CFG["ctx_events"])
-    for ctx in ZS_CFG.get("ctx_events_grid", [ZS_CFG["ctx_events"]]):
-        ZS_CFG["ctx_events"] = ctx
-        for t in ZS_CFG["grid_taus"]:
-            for a in ZS_CFG["grid_alphas"]:
-                for c in ZS_CFG["grid_cond"]:
-                    ZS_CFG["temperature"] = t
-                    ZS_CFG["prior_alpha"] = a
-                    ZS_CFG["cond_alpha"] = c
+    best = (np.inf, FS_CFG["temperature"], FS_CFG["prior_alpha"], FS_CFG["cond_alpha"], FS_CFG["ctx_events"])
+    for ctx in FS_CFG.get("ctx_events_grid", [FS_CFG["ctx_events"]]):
+        FS_CFG["ctx_events"] = ctx
+        for t in FS_CFG["grid_taus"]:
+            for a in FS_CFG["grid_alphas"]:
+                for c in FS_CFG["grid_cond"]:
+                    FS_CFG["temperature"] = t
+                    FS_CFG["prior_alpha"] = a
+                    FS_CFG["cond_alpha"] = c
                     preds = []
                     for _, r in val_df.iterrows():
                         p_days, _, _ = predict_time(r["prefix"], r["last_act"])
@@ -350,9 +395,9 @@ def tune_on_val():
                     if mae < best[0]:
                         best = (mae, t, a, c, ctx)
 
-    ZS_CFG["temperature"], ZS_CFG["prior_alpha"], ZS_CFG["cond_alpha"], ZS_CFG["ctx_events"] = best[1], best[2], best[3], best[4]
+    FS_CFG["temperature"], FS_CFG["prior_alpha"], FS_CFG["cond_alpha"], FS_CFG["ctx_events"] = best[1], best[2], best[3], best[4]
     wandb.config.update(
-        {"zs_cfg_tuned": {"val_mae_days": float(best[0]), "temperature": best[1], "prior_alpha": best[2], "cond_alpha": best[3], "ctx_events": best[4]}},
+        {"FS_CFG_tuned": {"val_mae_days": float(best[0]), "temperature": best[1], "prior_alpha": best[2], "cond_alpha": best[3], "ctx_events": best[4]}},
         allow_val_change=True
     )
     log.info("Tuned on val → MAE=%.4f d, tau=%.2f, alpha=%.2f, cond=%.2f, ctx=%d", best[0], best[1], best[2], best[3], best[4])
@@ -361,10 +406,10 @@ tune_on_val()
 
 # Record final knobs
 wandb.config.update({
-    "final_ctx_events": ZS_CFG["ctx_events"],
-    "final_temperature": ZS_CFG["temperature"],
-    "final_prior_alpha": ZS_CFG["prior_alpha"],
-    "final_cond_alpha": ZS_CFG.get("cond_alpha", 0.0),
+    "final_ctx_events": FS_CFG["ctx_events"],
+    "final_temperature": FS_CFG["temperature"],
+    "final_prior_alpha": FS_CFG["prior_alpha"],
+    "final_cond_alpha": FS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
     "unit": config["unit"],
 }, allow_val_change=True)
@@ -382,8 +427,7 @@ for k in sorted(test_df["k"].astype(int).unique()):
         preds.append(p_days)
     preds = np.array(preds, dtype=np.float64)
 
-    k_vals.append(k)
-    counts.append(len(subset))
+    k_vals.append(k); counts.append(len(subset))
     mae = mean_absolute_error(y_true, preds)
     mse = mean_squared_error(y_true, preds)
     rmse = float(np.sqrt(mse))
