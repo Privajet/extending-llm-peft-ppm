@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=HelpDesk_ACT_gpt-neo-1.3B_FS_training
+#SBATCH --job-name=HelpDesk_NT_Qwen3-4B_ZS_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -24,8 +24,8 @@ eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 
 # >>> HIER die gewünschte Env wählen <<<
 # ENV_NAME=${ENV_NAME:-thesis-baselines}
-ENV_NAME=${ENV_NAME:-thesis-llm}
-# ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
+# ENV_NAME=${ENV_NAME:-thesis-llm}
+ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
 conda activate "$ENV_NAME"
 
 # Threads
@@ -73,7 +73,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Zero-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Zero-Shot-Learning_HelpDesk.py
 
-srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_HelpDesk.py
+# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Few-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Few-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Few-Shot-Learning_HelpDesk.py
 
@@ -83,7 +83,7 @@ srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/gpt-neo-1.3B/fert
 
 # Qwen3-4B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_ACT_Zero-Shot-Learning_HelpDesk.py
-# srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_NT_Zero-Shot-Learning_HelpDesk.py
+srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_NT_Zero-Shot-Learning_HelpDesk.py
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_RT_Zero-Shot-Learning_HelpDesk.py
 
 # srun python -u /ceph/lfertig/Thesis/notebook/HelpDesk/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_ACT_Few-Shot-Learning_HelpDesk.py

@@ -42,7 +42,8 @@ DATASET = "HelpDesk"
 config = {
     # bookkeeping
     "dataset":                  DATASET,
-    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/NT"
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/NT",
+    "unit":                     "days"
 }
 
 ZS_CFG = {

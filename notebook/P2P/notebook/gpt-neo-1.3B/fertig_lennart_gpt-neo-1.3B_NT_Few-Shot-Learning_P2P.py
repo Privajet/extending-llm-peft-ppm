@@ -53,7 +53,8 @@ DATASET = "P2P"
 config = {
     # bookkeeping
     "dataset":                  DATASET,
-    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FS/NT"
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FS/NT",
+    "unit":                     "days"
 }
 
 FS_CFG = {
@@ -89,7 +90,7 @@ FS_CFG = {
     "use_cond_prior_by_last_act": True,
     "cond_alpha":               0.15,
     # validation grids
-    "do_val_tune":              True,
+    "do_val_tune":              False,
     "grid_taus":                [0.75, 0.9, 1.0, 1.1],
     "grid_alphas":              [0.0, 0.15, 0.25, 0.35],
     "grid_cond":                [0.0, 0.1, 0.15, 0.25],

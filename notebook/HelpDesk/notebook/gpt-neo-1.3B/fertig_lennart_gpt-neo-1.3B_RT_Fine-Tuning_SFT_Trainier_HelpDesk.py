@@ -39,80 +39,84 @@ from torch.nn.utils.rnn import pad_sequence
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% Reproducibility & logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
-
-logging.basicConfig(
-    level=logging.INFO, 
-    format="%(asctime)s %(levelname)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-log=logging.getLogger("neo_nt_ft")
-log.info("PyTorch %s | CUDA %s", torch.__version__, torch.cuda.is_available())
-if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
-
 # %%  W&B
 api_key = os.getenv("WANDB_API_KEY")
 wandb.login(key=api_key) if api_key else wandb.login()
+
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-# %% Configs
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/gpt-neo-1.3B/FT/RT",
-    "unit": "days",
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/FT/RT",
+    "out_dir":                  f"/ceph/lfertig/Thesis/models/{DATASET}/gpt-neo-1.3B/NT/rt_ft_{ts}",
+    "unit":                     "days"
 }
 
 FT_CFG = {
     # model / runtime
-    "model_name": "EleutherAI/gpt-neo-1.3B",
-    "dtype": "fp16",              # set "fp32" if CPU-only
-    "device": "auto",
+    "model_name":               "EleutherAI/gpt-neo-1.3B",
+    "dtype":                    "fp16",                                 # set "fp32" if CPU-only
+    "device":                   "auto",
     # prompt & context
-    "max_seq_len": 512,
-    "event_sep": " → ",
-    "prompt_tmpl_demo": (
-        "Trace: {trace}\n"
-        "Choose the remaining time from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer: {gold}\n\n"
-    ),
-    "prompt_tmpl_query": (
-        "Trace: {trace}\n"
-        "Choose the remaining time from the list below.\n"
-        "Labels:\n{labels}\n"
-        "Answer:"
-    ),
-    "epochs": 3,
-    "micro_bsz": 1,
-    "grad_accum": 8,
-    "lr": 3e-4,
-    "warmup_ratio": 0.05,
-    "lora_r": 16, 
-    "lora_alpha": 64, 
-    "lora_dropout": 0.05, 
-    "out_dir": f"/ceph/lfertig/Thesis/models/gpt-neo-1.3B/NT/nt_ft_{ts}",
+    "max_seq_len":              512,
+    "event_sep":                " → ",
+    "prompt_tmpl_demo":         (
+                                "Trace: {trace}\n"
+                                "Predict the remaining time until case completion. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Time bins (in days):\n{labels}\n"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "Predict the remaining time until case completion. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "Time bins (in days):\n{labels}\n"
+                                "Answer:"
+                                ),
+    "epochs":                   3,
+    "micro_bsz":                1,
+    "grad_accum":               8,
+    "lr":                       3e-4,
+    "warmup_ratio":             0.05,
+    "lora_r":                   16, 
+    "lora_alpha":               64, 
+    "lora_dropout":             0.05, 
     # time binning
-    "n_time_bins": 20,
-    "bin_scheme": "quantile",
+    "n_time_bins":              20,
 }
 
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+log = logging.getLogger(__name__)
+log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
+if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
+
 run = wandb.init(
-    project="gpt-neo-1.3B_RT_FineTuning_HelpDesk",
+    project=f"gpt-neo-1.3B_RT_FineTuning_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"neo_ft_rt_{ts}",
-    config={"run_cfg": RUN_CFG, "FT_CFG": FT_CFG},
+    config=config,
+    resume="never",
+    force=True
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_test.csv")
 
 def to_days(series): return series.astype(float)
 
@@ -186,7 +190,7 @@ def make_bins(train_series, num_bins=20, min_bin_count=5, clip_low=1e-6, clip_hi
     
     edges = enforce_min_count(edges, x, min_bin_count)
     centers = 0.5 * (edges[:-1] + edges[1:])
-    labels = [f"({edges[i]:.5f}, {edges[i+1]:.5f}] {RUN_CFG['unit']}" for i in range(len(centers))]
+    labels = [f"({edges[i]:.5f}, {edges[i+1]:.5f}] {config['unit']}" for i in range(len(centers))]
     return np.array(edges, dtype=np.float64), np.array(centers, dtype=np.float64), labels
 
 BIN_EDGES, BIN_CENTERS, BIN_LABELS = make_bins(
@@ -320,7 +324,7 @@ collator = CompletionOnlyCollator(tokenizer)
 
 # %%
 sft_cfg = SFTConfig(
-    output_dir=FT_CFG["out_dir"],
+    output_dir=config["out_dir"],
     num_train_epochs=FT_CFG["epochs"],
     learning_rate=FT_CFG["lr"],
     per_device_train_batch_size=FT_CFG["micro_bsz"],
@@ -355,7 +359,7 @@ trainer = SFTTrainer(
 
 # %% Train & save
 trainer.train()
-save_dir=FT_CFG["out_dir"]
+save_dir=config["out_dir"]
 trainer.model.save_pretrained(save_dir); tokenizer.save_pretrained(save_dir)
 log.info("Saved adapters & tokenizer to %s", save_dir)
 
@@ -413,11 +417,9 @@ def predict_time(prefix, last_act=None, elapsed_days=None, return_topk=3):
     return pred_days, top_bins, top_probs
 # %% Per-k evaluation
 k_vals, counts, maes, mses, rmses = [], [], [], [], []
-
 for k in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == k]
-    if subset.empty: 
-        continue
+    if subset.empty: continue
     y_true = subset["rt_days"].values.astype(np.float64)
     preds = []
     for _, r in subset.iterrows():
@@ -428,8 +430,8 @@ for k in sorted(test_df["k"].astype(int).unique()):
     k_vals.append(k); counts.append(len(subset))
     mae = mean_absolute_error(y_true, preds)
     mse = mean_squared_error(y_true, preds)
-    rmse = float(np.sqrt(mean_squared_error(y_true, preds)))
-    maes.append(mae); mses.append(mse); rmses.append(rmse)
+    rmse = float(np.sqrt(mse))
+    maes.append(float(mae)); mses.append(float(mse)); rmses.append(rmse)
 
 avg_mae  = float(np.mean(maes))  if maes  else float("nan")
 avg_mse  = float(np.mean(mses))  if mses  else float("nan")
@@ -466,7 +468,7 @@ wandb.log({
 })
 
 # %% Plots → disk
-plot_dir = RUN_CFG["plots_dir"]
+plot_dir = config["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
 if len(k_vals):

@@ -88,7 +88,7 @@ FS_CFG = {
     "K_prune":                  8,                                      # grid: [8,12,16]
     "no_self_loop_if_unseen":   True,                                   # if last event unseen, allow self-loop (otherwise it would be pruned out)
     # validation sweep (tiny)
-    "do_val_tune":              True,
+    "do_val_tune":              False,
     "grid_taus":                [0.6, 0.7, 0.8],
     "grid_alphas":              [0.0, 0.1],
     "grid_K":                   [6, 8, 12],

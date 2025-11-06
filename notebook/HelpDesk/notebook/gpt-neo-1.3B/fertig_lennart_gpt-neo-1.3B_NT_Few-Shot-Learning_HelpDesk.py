@@ -37,7 +37,6 @@ import matplotlib.pyplot as plt
 from sklearn.feature_extraction.text import TfidfVectorizer
 from sklearn.metrics.pairwise import cosine_similarity
 from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_score
-
 from collections import OrderedDict
 
 import wandb
@@ -90,7 +89,7 @@ FS_CFG = {
     "use_cond_prior_by_last_act": True,
     "cond_alpha":               0.15,
     # validation grids
-    "do_val_tune":              True,
+    "do_val_tune":              False,
     "grid_taus":                [0.75, 0.9, 1.0, 1.1],
     "grid_alphas":              [0.0, 0.15, 0.25, 0.35],
     "grid_cond":                [0.0, 0.1, 0.15, 0.25],

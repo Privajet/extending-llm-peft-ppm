@@ -32,13 +32,69 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_sc
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% Repro + logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
+# %% W&B
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
 
-logging.basicConfig(
-    level=logging.INFO,
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/Qwen3-4B/ZS/RT",
+    "unit":                     "days"
+}
+
+ZS_CFG = {
+    # model / runtime
+    "family":                   "qwen",
+    "model_name":               "Qwen/Qwen3-4B-Instruct-2507",
+    # prompt & context
+    "ctx_events":               12,                                     # last N events for context
+    "event_sep":                " → ",
+    # Chat system instruction to force single-label outputs
+    "system_msg":               (
+                                "You are an assistant for remaining-time prediction until case completion."
+                                "Given a trace and a list of time bins (in days), choose EXACTLY ONE bin from the list and output ONLY that bin."
+                                ),
+    # demo/query block templates (pure text that goes inside a chat turn)
+    "prompt_tmpl":              (
+                                "Trace: {trace}\n"
+                                "{maybe_elapsed}"
+                                "Labels:\n{labels}\n"
+                                "Answer:\n\n"
+                                ),
+    "add_eos_after_label": True,
+    # time binning (RT-specific)
+    "num_bins":                 20,                                     # number of quantile bins (e.g., 10/20/30)
+    "min_bin_count":            5,                                      # safety for degenerate splits
+    "clip_low_high":            [1e-6, None],                           # guard tiny zeros to avoid 0-width bins
+    # scoring & calibration
+    "length_norm":              True,
+    "temperature":              0.85,                                   # tuned on val
+    "use_class_prior":          True,                                   # global bin prior from TRAIN
+    "prior_alpha":              0.25,                                   # strength of global prior
+    # optional conditional prior by last activity (train-only, no leakage)
+    "use_cond_prior_by_last_act": True,
+    "cond_alpha":               0.35,                                   # strength; 0.2–0.6 often works; tune on val
+    # tiny validation sweep over a few zero-shot knobs
+    "do_val_tune":              False,
+    "grid_taus":                [0.7, 0.85, 1.0, 1.2],
+    "grid_alphas":              [0.0, 0.15, 0.25, 0.4],
+    "grid_cond":                [0.0, 0.25, 0.35, 0.5],                 # cond_alpha candidates
+    "ctx_events_grid":          [8, 12, 16]
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -46,68 +102,18 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %% W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# Base run config
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/Qwen3-4B/ZS/RT",
-    "unit": "days"
-}
-
-# Zero-shot config (prompt & scoring)
-ZS_CFG = {
-    # model / runtime
-    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-    # prompt & context
-    "ctx_events": 12,    # last N events for context
-    "event_sep": " → ",
-    "prompt_tmpl": (
-        "Trace: {trace}\n"
-        "Predict the remaining time until case completion. "
-        "Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
-        "{maybe_elapsed}"
-        "Time bins (in days):\n{labels}\n"
-        "Answer:"
-    ),
-    "add_eos_after_label": True,
-    # time binning (RT-specific)
-    "num_bins": 20,            # number of quantile bins (e.g., 10/20/30)
-    "min_bin_count": 5,        # safety for degenerate splits
-    "clip_low_high": [1e-6, None],  # guard tiny zeros to avoid 0-width bins
-    # scoring & calibration
-    "length_norm": True,
-    "temperature": 0.85,       # tuned on val
-    "use_class_prior": True,   # global bin prior from TRAIN
-    "prior_alpha": 0.25,       # strength of global prior
-    # optional conditional prior by last activity (train-only, no leakage)
-    "use_cond_prior_by_last_act": True,
-    "cond_alpha": 0.35,   # strength; 0.2–0.6 often works; tune on val
-    # tiny validation sweep over a few zero-shot knobs
-    "do_val_tune": True,
-    "grid_taus":   [0.7, 0.85, 1.0, 1.2],
-    "grid_alphas": [0.0, 0.15, 0.25, 0.4],
-    "grid_cond":   [0.0, 0.25, 0.35, 0.5],  # cond_alpha candidates
-    "ctx_events_grid": [8, 12, 16]
-}
-
 run = wandb.init(
-    project="Qwen3-4B_RT_ZeroShot_HelpDesk",
+    project=f"Qwen3-4B_RT_ZeroShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"qwen3-4b_zeroshot_rt_{ts}",
-    config={**RUN_CFG, "zs_cfg": ZS_CFG},
+    name=f"qwen3-4b_zs_rt_{ts}",
+    config={**config, "zs_cfg": ZS_CFG},
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_test.csv")
 
 def to_days(series):
     return series.astype(float)
@@ -273,7 +279,10 @@ def build_chat_prompt(prefix_tokens, elapsed_days=None):
     t = prefix_tokens[-ZS_CFG["ctx_events"]:]
     trace = ZS_CFG["event_sep"].join(t)
     content = _user_content_from_tmpl(ZS_CFG["prompt_tmpl"], trace, labels_for_prompt, elapsed_days)
-    messages = [{"role": "user", "content": content}]
+    messages = [
+        {"role": "system", "content": ZS_CFG["system_msg"]},
+        {"role": "user",   "content": content}
+    ]
     chat_text = tokenizer.apply_chat_template(messages, tokenize=False, add_generation_prompt=True)
     return chat_text
 
@@ -305,40 +314,41 @@ wandb.config.update({
 # %% Scoring (batch over candidate bins)
 @torch.no_grad()
 def score_bins(prefix_tokens, last_act=None, elapsed_days=None):
-    # reuse cached prompt IDs
-    P_ids = get_prompt_ids(prefix_tokens, elapsed_days)
-
-    rows, lens = [], []
-    for lbl in BIN_LABELS:
-        L = LABEL_TENSORS[lbl]
-        rows.append(torch.cat([P_ids, L], dim=0))
-        lens.append(len(L))
-
+    P_ids = get_prompt_ids(prefix_tokens, elapsed_days).unsqueeze(0)
     pad_id = tokenizer.pad_token_id
-    input_ids = torch.nn.utils.rnn.pad_sequence(rows, batch_first=True, padding_value=pad_id).to(DEVICE)  # <-- move to DEVICE
-    attn = (input_ids != pad_id).long()
+    attn = (P_ids != pad_id)
 
-    logits = model(input_ids=input_ids, attention_mask=attn).logits.float()
-    cut = P_ids.size(0)
+    out = model(input_ids=P_ids, attention_mask=attn, use_cache=True)
+    base_past   = out.past_key_values
+    base_logits = out.logits[:, -1, :]  # logits after the prompt
 
     ll = []
-    for i, Llen in enumerate(lens):
-        lp = torch.log_softmax(logits[i, cut-1:cut-1+Llen, :], dim=-1)
-        tgt = LABEL_TENSORS[BIN_LABELS[i]]
-        s = lp.gather(-1, tgt.unsqueeze(-1)).sum()
-        if ZS_CFG["length_norm"] and Llen > 0:
-            s = s / Llen
-        ll.append(float(s))
-    scores = (np.array(ll, dtype=np.float32) / max(1e-6, ZS_CFG["temperature"]))
+    for lbl in BIN_LABELS:
+        tgt = LABEL_TENSORS[lbl].unsqueeze(0)  # [1, L]
+        cur_past   = base_past
+        last_logits = base_logits
+        s = 0.0
+        for t in range(tgt.size(1)):
+            # score the current token from last_logits
+            s += torch.log_softmax(last_logits, dim=-1).gather(-1, tgt[:, t:t+1]).sum()
+            # then feed it to advance cache
+            o = model(input_ids=tgt[:, t:t+1], past_key_values=cur_past, use_cache=True)
+            cur_past    = o.past_key_values
+            last_logits = o.logits[:, -1, :]
 
+        if ZS_CFG["length_norm"] and tgt.size(1) > 0:
+            s = s / tgt.size(1)
+        ll.append(float(s))
+
+    scores = np.array(ll, dtype=np.float32) / max(1e-6, ZS_CFG["temperature"])
     if ZS_CFG["use_class_prior"]:
-        scores = scores + ZS_CFG["prior_alpha"] * LOG_PRIOR
+        scores += ZS_CFG["prior_alpha"] * LOG_PRIOR
     if ZS_CFG["use_cond_prior_by_last_act"]:
-        scores = scores + ZS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
+        scores += ZS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
 
     m = np.max(scores)
-    probs = np.exp(scores - m); s = probs.sum()
-    probs = probs / s if s > 0 else probs
+    probs = np.exp(scores - m); Z = probs.sum()
+    probs = probs / Z if Z > 0 else probs
     return scores, probs
 
 def predict_time(prefix_tokens, last_act=None, elapsed_days=None, return_topk=3):
@@ -394,15 +404,14 @@ wandb.config.update({
     "final_prior_alpha": ZS_CFG["prior_alpha"],
     "final_cond_alpha": ZS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
-    "unit": RUN_CFG["unit"],
+    "unit": config["unit"],
 }, allow_val_change=True)
 
-# %% Per-k evaluation (days)
+# %% Per-k evaluation
 k_vals, counts, maes, mses, rmses = [], [], [], [], []
 for k in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == k]
-    if subset.empty:
-        continue
+    if subset.empty: continue
     y_true = subset["rt_days"].values.astype(np.float64)
     preds = []
     for _, r in subset.iterrows():
@@ -428,8 +437,7 @@ print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 y_true_bins = test_df["bin_idx"].values if len(test_df) else np.array([])
 y_pred_bins = []
 for _, r in test_df.iterrows():
-    # top-1 bin = argmax score
-    scores, probs = score_bins(r["prefix"], r["last_act"], r["elapsed_days"])  # add elapsed_days
+    scores, _ = score_bins(r["prefix"], r["last_act"], r["elapsed_days"])  # add elapsed_days
     y_pred_bins.append(int(np.argmax(scores)))
 if len(y_pred_bins):
     top1_bin_acc = accuracy_score(y_true_bins, y_pred_bins)
@@ -437,7 +445,7 @@ if len(y_pred_bins):
     wandb.log({"metrics/top1_bin_acc": float(top1_bin_acc)})
 
 # %% Plots → disk
-plot_dir = RUN_CFG["plots_dir"]
+plot_dir = config["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
 if len(k_vals):
@@ -476,7 +484,7 @@ wandb.log({
 })
 
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
 tab = wandb.Table(columns=["k","prefix","last_act","gold_days","pred_days","top_bins","top_probs"])
 for _, r in sample.iterrows():
     pred_days, top_bins, top_probs = predict_time(r["prefix"], r["last_act"], r["elapsed_days"], return_topk=3)
