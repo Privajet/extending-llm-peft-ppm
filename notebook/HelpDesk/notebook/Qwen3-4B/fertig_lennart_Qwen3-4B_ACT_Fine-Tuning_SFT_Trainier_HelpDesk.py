@@ -4,12 +4,6 @@ os.environ["MPLBACKEND"] = "Agg"
 os.environ["TRANSFORMERS_NO_TORCHVISION"] = "1"
 os.environ.setdefault("TOKENIZERS_PARALLELISM", "false")
 
-# (Optional HPC stability for W&B)
-os.environ.setdefault("WANDB__SERVICE_WAIT", "180")
-os.environ.setdefault("WANDB_START_METHOD", "thread")
-os.environ.setdefault("WANDB_DIR", "/ceph/lfertig/wandb")
-os.environ.setdefault("WANDB_CACHE_DIR", "/ceph/lfertig/wandb_cache")
-
 # Preload libstdc++ for some HPC stacks
 prefix = os.environ.get("CONDA_PREFIX", sys.prefix)
 cands = glob.glob(os.path.join(prefix, "lib", "libstdc++.so.6*"))
@@ -32,80 +26,59 @@ from typing import List, Dict
 from datasets import Dataset, DatasetDict
 from sklearn.metrics import accuracy_score, precision_recall_fscore_support
 import wandb
+from transformers import AutoTokenizer, AutoModelForCausalLM
+from peft import Loraconfig, get_peft_model, PeftModel
+from trl import SFTTrainer, SFTconfig
 
-from transformers import (
-    AutoTokenizer, AutoModelForCausalLM,
-)
-from peft import LoraConfig, get_peft_model, PeftModel
-from trl import SFTTrainer, SFTConfig
-
-# Repro + logging
-SEED = 41
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
-
-logging.basicConfig(level=logging.INFO,
-    format="%(asctime)s %(levelname)s: %(message)s",
-    handlers=[logging.StreamHandler(sys.stdout)]
-)
-log = logging.getLogger(__name__)
-log.info("PyTorch: %s | CUDA: %s", torch.__version__, torch.cuda.is_available())
-if torch.cuda.is_available():
-    log.info("GPU: %s", torch.cuda.get_device_name(0))
-
-# W&B login
+# %% 
 api_key = os.getenv("WANDB_API_KEY")
-if api_key:
-    wandb.login(key=api_key, relogin=True)
-else:
-    os.environ["WANDB_MODE"] = "offline"   # safe fallback for batch jobs; you can 'wandb sync' later
+wandb.login(key=api_key) if api_key else wandb.login()
 
-# %% Config
-DATASET = "HelpDesk"
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 
-CONFIG = {
-    "dataset": DATASET,
-    "plots_dir": f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/Qwen3-4B/FT/ACT",
-    "out_dir":   f"/ceph/lfertig/Thesis/models/{DATASET}/Qwen3-4B/ACT/act_ft_{ts}",
-    "event_sep": " → ",
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/Qwen3-4B/FT/ACT",
+    "out_dir":                  f"/ceph/lfertig/Thesis/models/{DATASET}/Qwen3-4B/ACT/act_ft_{ts}"
 }
 
 FT_CFG = {
     # model / runtime
-    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-    "dtype": "fp16",                      # "fp32" on CPU
-    "device": "auto",
-
+    "model_name":               "Qwen/Qwen3-4B-Instruct-2507",
+    "dtype":                    "fp16",                                 # "fp32" on CPU
+    "device":                   "auto",
+    "event_sep":                " → ",
+    # Chat system instruction to force single-label outputs
+    "system_msg":               (
+                                "You are an assistant for next-activity prediction."
+                                "Given a trace and a label list, choose EXACTLY ONE label from the list below and output ONLY that label."
+                                ),
     # prompt formatting (completion-style so we can mask loss cleanly)
-    "prompt_tmpl_demo": (
-        "System: Predict the next activity. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
-        "User: {trace}\n"
-        "Labels:\n{labels}\n"
-        "Assistant: {gold}"
-    ),
-    "prompt_tmpl_query": (
-        "System: Predict the next activity. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
-        "User: {trace}\n"
-        "Labels:\n{labels}\n"
-        "Assistant:"
-    ),
-
+    "prompt_tmpl_demo":         (
+                                "Trace: {trace}\n"
+                                "Labels:\n{labels}\n"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "Labels:\n{labels}\n"
+                                "Answer:"
+                                ),
     # training
-    "epochs": 3,
-    "micro_bsz": 1,
-    "grad_accum": 8,
-    "lr": 2e-4,
-    "warmup_ratio": 0.05,
-    "max_seq_len": 768,                   # Qwen has long context; keep reasonable
+    "epochs":                   3,
+    "micro_bsz":                1,
+    "grad_accum":               8,
+    "lr":                       2e-4,
+    "warmup_ratio":             0.05,
+    "max_seq_len":              768,                   # Qwen has long context; keep reasonable
 
     # LoRA
-    "lora_r": 16,
-    "lora_alpha": 64,
-    "lora_dropout": 0.05,
+    "lora_r":                   16,
+    "lora_alpha":               64,
+    "lora_dropout":             0.05,
 
     # LoRA target modules (Qwen/LLama-style)
     "target_modules": [
@@ -113,18 +86,34 @@ FT_CFG = {
     ],
 }
 
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
+    format="%(asctime)s %(levelname)s: %(message)s",
+    handlers=[logging.StreamHandler(sys.stdout)]
+)
+log = logging.getLogger(__name__)
+log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
+if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
+
 run = wandb.init(
-    project=f"Qwen3-4B_ACT_FineTuning_{CONFIG['dataset']}",
+    project=f"Qwen3-4B_ACT_FineTuning_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"qwen3-4b_ft_act_{ts}",
-    config={"CONFIG": CONFIG, "FT_CFG": FT_CFG},
+    config={"config": config, "FT_CFG": FT_CFG},
     resume="never"
 )
 
 # %% Data
-train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{CONFIG['dataset']}/processed/next_activity_train.csv")
-val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{CONFIG['dataset']}/processed/next_activity_val.csv")
-test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{CONFIG['dataset']}/processed/next_activity_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_test.csv")
 
 for d in (train_df, val_df, test_df):
     d.rename(columns={"next_act": "next_activity"}, inplace=True)
@@ -140,7 +129,7 @@ label_list = sorted(pd.concat([
 labels_for_prompt = "\n".join(label_list)
 
 # %% Tokenizer & Base Model
-from transformers import BitsAndBytesConfig
+from transformers import BitsAndBytesconfig
 
 MODEL_NAME = FT_CFG["model_name"]
 DTYPE = (torch.float16 if (torch.cuda.is_available() and FT_CFG["dtype"]=="fp16") else torch.float32)
@@ -157,7 +146,7 @@ if tokenizer.pad_token_id is None:
 tokenizer.truncation_side = "left"
 
 # You can enable 4-bit for memory if needed (set quantization_config=bnb_cfg below)
-# bnb_cfg = BitsAndBytesConfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
+# bnb_cfg = BitsAndBytesconfig(load_in_4bit=True, bnb_4bit_compute_dtype=torch.float16)
 
 base_model = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME,
@@ -170,9 +159,9 @@ if hasattr(base_model.config, "use_cache"):
     base_model.config.use_cache = False  # must be off for training
 
 # %% LoRA
-from peft import LoraConfig, get_peft_model
+from peft import Loraconfig, get_peft_model
 
-peft_cfg = LoraConfig(
+peft_cfg = Loraconfig(
     r=FT_CFG["lora_r"],
     lora_alpha=FT_CFG["lora_alpha"],
     lora_dropout=FT_CFG["lora_dropout"],
@@ -201,7 +190,7 @@ model.print_trainable_parameters()
 
 # %% Build SFT dataset (completion-only after "Assistant:")
 def df_to_text(df: pd.DataFrame, with_gold=True) -> List[str]:
-    sep = CONFIG["event_sep"]
+    sep = config["event_sep"]
     rows = []
     for _, r in df.iterrows():
         trace = sep.join(r["prefix"])
@@ -261,10 +250,10 @@ class CompletionOnlyCollator:
 collator = CompletionOnlyCollator(tokenizer)
 
 # %% Trainer (TRL SFT)
-from trl import SFTTrainer, SFTConfig
+from trl import SFTTrainer, SFTconfig
 
-sft_cfg = SFTConfig(
-    output_dir=CONFIG["out_dir"],
+sft_cfg = SFTconfig(
+    output_dir=config["out_dir"],
     num_train_epochs=FT_CFG["epochs"],
     learning_rate=FT_CFG["lr"],
     per_device_train_batch_size=FT_CFG["micro_bsz"],
@@ -298,10 +287,10 @@ trainer = SFTTrainer(
 )
 
 trainer.train()
-os.makedirs(CONFIG["out_dir"], exist_ok=True)
-trainer.model.save_pretrained(CONFIG["out_dir"])
-tokenizer.save_pretrained(CONFIG["out_dir"])
-log.info("Saved LoRA adapters & tokenizer to %s", CONFIG["out_dir"])
+os.makedirs(config["out_dir"], exist_ok=True)
+trainer.model.save_pretrained(config["out_dir"])
+tokenizer.save_pretrained(config["out_dir"])
+log.info("Saved LoRA adapters & tokenizer to %s", config["out_dir"])
 
 if hasattr(trainer.model, "config") and hasattr(trainer.model.config, "use_cache"):
     trainer.model.config.use_cache = True
@@ -310,7 +299,7 @@ if hasattr(trainer.model, "config") and hasattr(trainer.model.config, "use_cache
 base_infer = AutoModelForCausalLM.from_pretrained(
     MODEL_NAME, trust_remote_code=True, low_cpu_mem_usage=True, torch_dtype=DTYPE
 ).to(DEVICE)
-infer_model = PeftModel.from_pretrained(base_infer, CONFIG["out_dir"])
+infer_model = PeftModel.from_pretrained(base_infer, config["out_dir"])
 if hasattr(infer_model, "gradient_checkpointing_disable"):
     infer_model.gradient_checkpointing_disable()
 infer_model.eval()
@@ -326,7 +315,7 @@ LABEL_IDS = {lbl: tokenizer(" " + lbl, add_special_tokens=False).input_ids for l
 
 def _scores_for_labels(prefix: List[str], labels=label_list) -> np.ndarray:
     """Compute log-likelihood scores for continuing the query prompt with each label."""
-    sep = CONFIG["event_sep"]
+    sep = config["event_sep"]
     seq = sep.join(prefix)
     prompt = FT_CFG["prompt_tmpl_query"].format(trace=seq, labels=labels_for_prompt) + " "
     P_ids = tokenizer(prompt, add_special_tokens=False, return_tensors="pt")["input_ids"][0]
@@ -423,23 +412,23 @@ wandb.log({
 })
 
 # %% Plots
-os.makedirs(CONFIG["plots_dir"], exist_ok=True)
+os.makedirs(config["plots_dir"], exist_ok=True)
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
     plt.title("Accuracy vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("Accuracy")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(CONFIG['plots_dir'], f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, fscores, marker="o", label="F1 (weighted)")
     plt.title("F1 vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("F1 (weighted)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(CONFIG['plots_dir'], f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
-print(f"Saved plots to: {CONFIG['plots_dir']}")
+print(f"Saved plots to: {config['plots_dir']}")
 
 # %% Top-k (3/5) on entire test + samples table
 def topk_accuracy(y_true, topk_list, k=3):
@@ -458,7 +447,7 @@ table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "t
 for _, r in sample.iterrows():
     toks = r["prefix"] if isinstance(r["prefix"], list) else str(r["prefix"]).split()
     pred, top5, p_pred, top5_p = predict_topk(toks, k=5)
-    prefix_pretty = CONFIG["event_sep"].join(toks)
+    prefix_pretty = config["event_sep"].join(toks)
     gold = str(r["next_activity"])
     print("Prefix:", prefix_pretty)
     print("Gold:  ", gold)

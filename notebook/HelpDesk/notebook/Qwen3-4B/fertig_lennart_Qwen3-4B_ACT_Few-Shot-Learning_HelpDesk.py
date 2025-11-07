@@ -123,7 +123,7 @@ run = wandb.init(
     project=f"Qwen3-4B_ACT_FewShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
     name=f"Qwen3-4B_fs_act_{ts}",
-    config=config,
+    config={"config": config, "FT_CFG": FS_CFG},
     resume="never",
     force=True
 )

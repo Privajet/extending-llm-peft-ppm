@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BPIC20_DomesticDeclarations_ACT_gpt-neo-1.3B_ZS_training
+#SBATCH --job-name=BPIC20_DomesticDeclarations_ACT_gpt-neo-1.3B_FT_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -69,7 +69,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/baseline/fertig_lennart_baseline_TabPFN_RT_BPIC20_DomesticDeclarations.py
 
 # GPT-Neo-1.3B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
-srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_BPIC20_DomesticDeclarations.py
+# srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Zero-Shot-Learning_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Zero-Shot-Learning_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Zero-Shot-Learning_BPIC20_DomesticDeclarations.py
 
@@ -77,7 +77,7 @@ srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/noteboo
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Few-Shot-Learning_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Few-Shot-Learning_BPIC20_DomesticDeclarations.py
 
-# srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Fine-Tuning_SFT_Trainier_BPIC20_DomesticDeclarations.py
+srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Fine-Tuning_SFT_Trainier_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Fine-Tuning_SFT_Trainier_BPIC20_DomesticDeclarations.py
 # srun python -u /ceph/lfertig/Thesis/notebook/BPIC20_DomesticDeclarations/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Fine-Tuning_SFT_Trainier_BPIC20_DomesticDeclarations.py
 

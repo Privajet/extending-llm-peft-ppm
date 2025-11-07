@@ -60,7 +60,7 @@ FT_CFG = {
     # model / runtime
     "model_name":               "EleutherAI/gpt-neo-1.3B",
     "dtype":                    "fp16",                                 # set "fp32" if CPU-only
-    "device": "auto",
+    "device":                   "auto",
     # prompt & context
     "max_seq_len":              512,
     "event_sep":                " → ",
