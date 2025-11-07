@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=P2P_NT_gpt-neo-1.3B_FT_training
+#SBATCH --job-name=P2P_RT_Qwen3-4B_FS_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -24,8 +24,8 @@ eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 
 # >>> HIER die gewünschte Env wählen <<<
 # ENV_NAME=${ENV_NAME:-thesis-baselines}
-ENV_NAME=${ENV_NAME:-thesis-llm}
-# ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
+# ENV_NAME=${ENV_NAME:-thesis-llm}
+ENV_NAME=${ENV_NAME:-thesis-llm-qwen}
 conda activate "$ENV_NAME"
 
 # Threads
@@ -78,7 +78,7 @@ python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cu
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Few-Shot-Learning_P2P.py
 
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_ACT_Fine-Tuning_SFT_Trainier_P2P.py
-srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Fine-Tuning_SFT_Trainier_P2P.py
+# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_NT_Fine-Tuning_SFT_Trainier_P2P.py
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_lennart_gpt-neo-1.3B_RT_Fine-Tuning_SFT_Trainier_P2P.py
 
 # Qwen3-4B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
@@ -88,7 +88,7 @@ srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/gpt-neo-1.3B/fertig_le
 
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_ACT_Few-Shot-Learning_P2P.py
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_NT_Few-Shot-Learning_P2P.py
-# srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_RT_Few-Shot-Learning_P2P.py
+srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/Qwen3-4B/fertig_lennart_Qwen3-4B_RT_Few-Shot-Learning_P2P.py
 
 # Llama-3.1-8B (Zero-Shot / Few-Shot / Fine-Tuning) nur mit thesis-llm:
 # srun python -u /ceph/lfertig/Thesis/notebook/P2P/notebook/Llama-3.1-8B/fertig_lennart_Llama-3.1-8B_ACT_Zero-Shot-Learning_P2P.py

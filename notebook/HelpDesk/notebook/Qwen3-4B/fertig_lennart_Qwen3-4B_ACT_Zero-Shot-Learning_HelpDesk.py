@@ -35,10 +35,67 @@ import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 from collections import Counter, defaultdict
 
-# %% Reproducibility & logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
+# %% 
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
+
+# %%
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/Qwen3-4B/ZS/ACT"
+}
+
+ZS_CFG = {
+    # model / runtime
+    "family":                   "qwen",
+    "model_name":               "Qwen/Qwen3-4B-Instruct-2507",
+    "dtype":                    "fp16",
+    "device":                   "auto",
+    # prompt & context (few-shot)
+    "ctx_events":               12,                                     # query-tail events
+    "event_sep":                " → ",
+    # Chat system instruction to force single-label outputs
+    "system_msg":               (
+                                "You are an assistant for next-activity prediction."
+                                "Given a trace and a label list, choose EXACTLY ONE label from the list below and output ONLY that label."
+                                ),
+    # demo/query block templates (pure text that goes inside a chat turn)
+    "prompt_tmpl":              (
+                                "Trace: {trace}\n"
+                                "Labels:\n{labels}\n"
+                                "Answer:"
+                            ),
+    # scoring & calibration
+    "add_eos_after_label":      True,
+    "length_norm":              True,
+    "temperature":              0.7,
+    "use_class_prior":          False,
+    "prior_alpha":              0.00,
+    "bigram_weight":            1.2,                                    # soft P(next|last) boost
+    # transition knowledge
+    "use_bigram_filter":        True,                                   # hard prune to labels seen after last
+    # pruning
+    "K_prune":                  8,                                      # grid: [6,8,12]
+    "no_self_loop_if_unseen":   True,
+    # validation sweep (tiny)
+    "do_val_tune":              False,
+    "grid_taus":                [0.6, 0.7, 0.8],
+    "grid_alphas":              [0.0, 0.1],
+    "ctx_events_grid":          [8, 12, 16],
+    # evaluation
+    "topk":                     [1, 3, 5],
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
 
 logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
@@ -48,75 +105,19 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %%  W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# base run config
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/Qwen3-4B/ZS/ACT",
-    "unit": "days",
-}
-
-# zero-shot “hyperparameters” (prompt & scoring)
-ZS_CFG = {
-    # model / runtime
-    "family": "qwen",
-    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-    "dtype": "fp16",
-    "device": "auto",
-    # prompt & context (few-shot)
-    "ctx_events": 12,           # query-tail events
-    "event_sep": " → ",
-    # Chat system instruction to force single-label outputs
-    "system_msg": (
-        "You are an assistant for next-activity prediction. "
-        "Given a trace and a label list, output EXACTLY ONE label from the list. "
-        "No extra text, punctuation, or explanations."
-    ),
-    # demo/query block templates (pure text that goes inside a chat turn)
-    "prompt_tmpl": (
-        "Trace: {trace}\n"
-        "Labels:\n{labels}\n"
-        "Answer:"
-    ),
-    # scoring & calibration
-    "add_eos_after_label": True,
-    "length_norm": True,
-    "temperature": 0.7,
-    "use_class_prior": False,
-    "prior_alpha": 0.00,
-    "bigram_weight": 1.2,       # soft P(next|last) boost
-    # transition knowledge
-    "use_bigram_filter": True,  # hard prune to labels seen after last
-    # pruning
-    "K_prune": 8,               # grid: [6,8,12]
-    "no_self_loop_if_unseen": True,
-    # validation sweep (tiny)
-    "do_val_tune": True,
-    "grid_taus":   [0.6, 0.7, 0.8],
-    "grid_alphas": [0.0, 0.1],
-    "ctx_events_grid": [8, 12, 16],
-    # evaluation
-    "topk": [1, 3, 5],
-}
-
 run = wandb.init(
-    project="Qwen3-4B_ACT_ZeroShot_HelpDesk",
+    project=f"Qwen3-4B_ACT_ZeroShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"Qwen3-4B_zeroshot_act_{ts}",
-    config={**RUN_CFG, "zs_cfg": ZS_CFG},
+    name=f"Qwen3-4B_zs_act_{ts}",
+    config=config,
+    resume="never",
+    force=True
 )
-
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/next_activity_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_test.csv")
 
 for d in (train_df, val_df, test_df):
     d.rename(columns={"next_act": "next_activity"}, inplace=True)
@@ -385,41 +386,47 @@ wandb.config.update({
     "final_prior_alpha": ZS_CFG["prior_alpha"],
 }, allow_val_change=True)
 
-# %% Per-k evaluation
+# %% Per-k loop over actual k values; compute macro averages over k; micro Accuracy
 k_vals, accuracies, fscores, precisions, recalls, counts = [], [], [], [], [], []
 
-for k in sorted(test_df["k"].astype(int).unique()):
-    test_data_subset = test_df[test_df["k"] == k]
+for i in sorted(test_df["k"].astype(int).unique()):
+    test_data_subset = test_df[test_df["k"] == i]
     if len(test_data_subset) > 0:
         y_true = test_data_subset["next_activity"].tolist()
-        y_pred = [predict_topk(p, k=1)[0] for p in test_data_subset["prefix"]]
-        acc = accuracy_score(y_true, y_pred)
-        prec, rec, f1, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
-        k_vals.append(k); counts.append(len(test_data_subset))
-        accuracies.append(acc); precisions.append(prec); recalls.append(rec); fscores.append(f1)
+        prefixes = test_data_subset["prefix"].tolist()  # these are lists of strings
+        y_pred = [predict_topk(p, k=1)[0] for p in prefixes]  # get top-1 prediction per prefix
+        
+        accuracy = accuracy_score(y_true, y_pred)
+        precision, recall, fscore, _ = precision_recall_fscore_support(y_true, y_pred, average="weighted", zero_division=0)
+        k_vals.append(i)
+        counts.append(len(y_true))
+        accuracies.append(accuracy)
+        fscores.append(fscore)
+        precisions.append(precision)
+        recalls.append(recall)
 
 avg_accuracy = float(np.mean(accuracies)) if accuracies else float("nan")
-avg_f1  = float(np.mean(fscores))    if fscores    else float("nan")
-avg_precision   = float(np.mean(precisions)) if precisions else float("nan")
-avg_recall   = float(np.mean(recalls))    if recalls    else float("nan")
+avg_f1 = float(np.mean(fscores)) if fscores else float("nan")
+avg_precision = float(np.mean(precisions)) if precisions else float("nan")
+avg_recall = float(np.mean(recalls)) if recalls else float("nan")
 
 print(f"Average accuracy across all prefixes:  {avg_accuracy:.4f}")
 print(f"Average f-score across all prefixes:   {avg_f1:.4f}")
 print(f"Average precision across all prefixes: {avg_precision:.4f}")
-print(f"Average recall across all prefixes:    {avg_recall:.4f}")
-
-# Micro (global) accuracy over all val prefixes
-# Total correct / total samples across the entire val set
-y_true_all = val_df["next_activity"].tolist()
-y_pred_all = [predict_topk(p, k=1)[0] for p in val_df["prefix"]]
-micro_acc  = accuracy_score(y_true_all, y_pred_all)
-print(f"[Val] Micro (global) accuracy: {micro_acc:.4f}")
+print(f"Average recall across all prefixes:    {avg_recall:.4f}") 
 
 # Micro (global) accuracy over all test prefixes
-# Total correct / total samples across the entire test set
-y_true_all = test_df["next_activity"].tolist()
-y_pred_all = [predict_topk(p, k=1)[0] for p in test_df["prefix"]]
-micro_acc  = accuracy_score(y_true_all, y_pred_all)
+y_true_val = val_df["next_activity"].tolist()
+prefixes_val = val_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_val]
+micro_acc_val = accuracy_score(y_true_val, y_pred_all)
+print(f"[VAL]  Micro (global) accuracy: {micro_acc_val:.4f}")
+
+# Micro (global) accuracy over all test prefixes
+y_true_test = test_df["next_activity"].tolist()
+prefixes_test = test_df["prefix"].tolist()
+y_pred_all = [predict_topk(p, k=1)[0] for p in prefixes_test]
+micro_acc = accuracy_score(y_true_test, y_pred_all)
 print(f"[TEST] Micro (global) accuracy: {micro_acc:.4f}")
 
 # %% Top-k accuracy on the whole test set 
@@ -434,26 +441,38 @@ wandb.log({
     "metrics/top5_acc": float(topk_accuracy(y_all, topk_all, k=5)),
 })
 
-# %% Plots
-plot_dir = RUN_CFG["plots_dir"]
-os.makedirs(plot_dir, exist_ok=True)
+# %% Plots → disk
+os.makedirs(config["plots_dir"], exist_ok=True)
 
+# %% Top-k accuracy on the whole test set 
+def topk_accuracy(y_true, topk_labels_list, k=3):
+    hits = sum(y_true[i] in topk_labels_list[i][:k] for i in range(len(y_true)))
+    return hits / len(y_true) if len(y_true) else float("nan")
+
+topk_all = [predict_topk(p, k=5)[1] for p in test_df["prefix"]]
+y_all    = test_df["next_activity"].tolist()
+wandb.log({
+    "metrics/top3_acc": float(topk_accuracy(y_all, topk_all, k=3)),
+    "metrics/top5_acc": float(topk_accuracy(y_all, topk_all, k=5)),
+})
+
+# %% Acc/F1 vs k
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
     plt.title("Accuracy vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("Accuracy")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"acc_vs_k_{ts}.png"), dpi=150); plt.close()
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, fscores, marker="o", label="F1 (weighted)")
     plt.title("F1 vs. Prefix Length (k)")
     plt.xlabel("Prefix Length (k)"); plt.ylabel("F1 (weighted)")
     plt.grid(True); plt.legend(); plt.tight_layout()
-    plt.savefig(os.path.join(plot_dir, f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
+    plt.savefig(os.path.join(config['plots_dir'], f"f1_vs_k_{ts}.png"), dpi=150); plt.close()
 
-print(f"Saved plots to: {plot_dir}")
+print(f"Saved plots to: {config['plots_dir']}")
 
 # %% Log per-k curves + macro averages
 wandb.log({
@@ -469,18 +488,13 @@ wandb.log({
     "metrics/avg_recall": avg_recall,
 })
 
-# %% Robust confusion matrix (avoid KeyError by normalizing strings + union classes)
-def _norm(s): 
-    return str(s).strip()
+# %% Robust confusion matrix
+def _norm(s): return str(s).strip()
 
-# Gather true/pred labels as strings
 y_true_lbl = [_norm(x) for x in test_df["next_activity"].tolist()]
-y_pred_lbl = [_norm(predict_topk(p, k=1)[0]) for p in test_df["prefix"]]
-
-# Consistent label axis (union of observed classes), or use label_list for a fixed axis
-cm_labels = sorted(set(y_true_lbl) | set(y_pred_lbl))
-# If you prefer a stable axis across runs, do:
-# cm_labels = label_list
+prefixes_test = test_df["prefix"].tolist()
+y_pred_lbl = [_norm(predict_topk(p, k=1)[0]) for p in prefixes_test]
+cm_labels = label_list
 
 try:
     wandb.log({
@@ -501,30 +515,35 @@ except Exception as e:
     plt.xticks(ticks=range(len(cm_labels)), labels=cm_labels, rotation=90)
     plt.yticks(ticks=range(len(cm_labels)), labels=cm_labels)
     plt.tight_layout()
-    cm_path = os.path.join(plot_dir, f"confusion_matrix_{ts}.png")
+    cm_path = os.path.join(config['plots_dir'], f"confusion_matrix_{ts}.png")
     plt.savefig(cm_path, dpi=150); plt.close()
     wandb.log({"cm_image": wandb.Image(cm_path)})
     
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
-table = wandb.Table(columns=["k","prefix","gold","pred","p_pred","top3","top3_p"])
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
+table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
+
 for _, r in sample.iterrows():
-    pred, topk, p_pred, topk_p = predict_topk(r["prefix"], k=3)
-    print("Prefix:", " → ".join(r["prefix"]))
-    print("Gold:  ", r["next_activity"])
+    toks = r["prefix"] if isinstance(r["prefix"], list) else str(r["prefix"]).split()
+    pred, top5, p_pred, top5_p = predict_topk(toks, k=5)
+    
+    prefix_pretty = " → ".join(toks)
+    gold = str(r["next_activity"])
+    
+    print("Prefix:", prefix_pretty)
+    print("Gold:  ", gold)
     print(f"Pred:  {pred} ({p_pred:.3f})")
-    print("Top-3:", topk)
+    print("Top-5:", top5)
     print("-"*60)
     table.add_data(
         r["k"],
-        " → ".join(r["prefix"]),
-        r["next_activity"],
+        prefix_pretty,
+        gold,
         pred,
-        float(p_pred),
-        ", ".join(topk),
-        ", ".join([f"{x:.3f}" for x in topk_p])
+        p_pred,
+        ", ".join(top5),
+        ", ".join([f"{x:.3f}" for x in top5_p])
     )
 wandb.log({"samples": table})
 
 # %% Finish
-wandb.finish()

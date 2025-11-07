@@ -32,13 +32,66 @@ from sklearn.metrics import mean_absolute_error, mean_squared_error, accuracy_sc
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% Repro + logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available(): torch.cuda.manual_seed_all(SEED)
+# %%
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
 
-logging.basicConfig(
-    level=logging.INFO,
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/RT",
+    "unit":                     "days"
+}
+
+
+ZS_CFG = {
+    # model / runtime
+    "base_model":               "EleutherAI/gpt-neo-1.3B",
+    "dtype":                    "fp16",                                 # "fp32" if CPU-only
+    "device":                   "auto",
+    # prompt & context
+    "ctx_events":               12,                                     # last N events for context
+    "event_sep":                " → ",
+    "prompt_tmpl":              (
+                                "Trace: {trace}\n"
+                                "Predict the remaining time until case completion. Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
+                                "{maybe_elapsed}"
+                                "Time bins (in days):\n{labels}\n"
+                                "Answer:"
+                                ),
+    "add_eos_after_label":      True,
+    # time binning
+    "num_bins":                 20,                                     # number of quantile bins (e.g., 10/20/30)
+    "min_bin_count":            5,                                      # safety for degenerate splits
+    "clip_low_high":            [1e-6, None],                           # guard tiny zeros to avoid 0-width bins
+    # scoring & calibration
+    "length_norm":              True,
+    "temperature":              0.85,                                   # tuned on val
+    "use_class_prior":          True,                                   # global bin prior from TRAIN
+    "prior_alpha":              0.25,                                   # strength of global prior
+    # optional conditional prior by last activity (train-only, no leakage)
+    "use_cond_prior_by_last_act": True,
+    "cond_alpha":               0.35,                                   # strength; 0.2–0.6 often works; tune on val
+    # tiny validation sweep over a few zero-shot knobs
+    "do_val_tune":              False,
+    "grid_taus":                [0.7, 0.85, 1.0, 1.2],
+    "grid_alphas":              [0.0, 0.15, 0.25, 0.4],
+    "grid_cond":                [0.0, 0.25, 0.35, 0.5],                 # cond_alpha candidates
+    "ctx_events_grid":          [8, 12, 16]
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -46,71 +99,20 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %% W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# Base run config
-RUN_CFG = {
-    "seed": SEED,
-    "dataset_path": "/ceph/lfertig/Thesis/data/processed/df_helpdesk.csv.gz",
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/gpt-neo-1.3B/ZS/RT",
-    "unit": "days"  # internal unit for durations (days)
-}
-
-# Zero-shot config (prompt & scoring)
-ZS_CFG = {
-    # model / runtime
-    "base_model": "EleutherAI/gpt-neo-1.3B",
-    "dtype": "fp16",     # "fp32" if CPU-only
-    "device": "auto",
-    # prompt & context
-    "ctx_events": 12,    # last N events for context
-    "event_sep": " → ",
-    "prompt_tmpl": (
-        "Trace: {trace}\n"
-        "Predict the remaining time until case completion. "
-        "Choose EXACTLY ONE label from the list below and output ONLY that label.\n"
-        "{maybe_elapsed}"
-        "Time bins (in days):\n{labels}\n"
-        "Answer:"
-    ),
-    "add_eos_after_label": True,
-    # time binning (RT-specific)
-    "num_bins": 20,            # number of quantile bins (e.g., 10/20/30)
-    "min_bin_count": 5,        # safety for degenerate splits
-    "clip_low_high": [1e-6, None],  # guard tiny zeros to avoid 0-width bins
-    # scoring & calibration
-    "length_norm": True,
-    "temperature": 0.85,       # tuned on val
-    "use_class_prior": True,   # global bin prior from TRAIN
-    "prior_alpha": 0.25,       # strength of global prior
-    # optional conditional prior by last activity (train-only, no leakage)
-    "use_cond_prior_by_last_act": True,
-    "cond_alpha": 0.35,   # strength; 0.2–0.6 often works; tune on val
-    # tiny validation sweep over a few zero-shot knobs
-    "do_val_tune": True,
-    "grid_taus":   [0.7, 0.85, 1.0, 1.2],
-    "grid_alphas": [0.0, 0.15, 0.25, 0.4],
-    "grid_cond":   [0.0, 0.25, 0.35, 0.5],  # cond_alpha candidates
-    "ctx_events_grid": [8, 12, 16]
-}
-
 run = wandb.init(
-    project="gpt-neo-1.3B_RT_ZeroShot_HelpDesk",
+    project=f"gpt-neo-1.3B_RT_ZeroShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"neo_zeroshot_rt_{ts}",
-    config={**RUN_CFG, "zs_cfg": ZS_CFG},
+    name=f"neo_zs_rt_{ts}",
+    config=config,
+    resume="never",
+    force=True
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_test.csv")
 
 def to_days(series):
     return series.astype(float)
@@ -394,16 +396,14 @@ wandb.config.update({
     "final_prior_alpha": ZS_CFG["prior_alpha"],
     "final_cond_alpha": ZS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
-    "unit": RUN_CFG["unit"],
+    "unit": config["unit"],
 }, allow_val_change=True)
 
 # %% Per-k evaluation
 k_vals, counts, maes, mses, rmses = [], [], [], [], []
-
 for k in sorted(test_df["k"].astype(int).unique()):
     subset = test_df[test_df["k"] == k]
-    if subset.empty: 
-        continue
+    if subset.empty: continue
     y_true = subset["rt_days"].values.astype(np.float64)
     preds = []
     for _, r in subset.iterrows():
@@ -414,8 +414,8 @@ for k in sorted(test_df["k"].astype(int).unique()):
     k_vals.append(k); counts.append(len(subset))
     mae = mean_absolute_error(y_true, preds)
     mse = mean_squared_error(y_true, preds)
-    rmse = float(np.sqrt(mean_squared_error(y_true, preds)))
-    maes.append(mae); mses.append(mse); rmses.append(rmse)
+    rmse = float(np.sqrt(mse))
+    maes.append(float(mae)); mses.append(float(mse)); rmses.append(rmse)
 
 avg_mae  = float(np.mean(maes))  if maes  else float("nan")
 avg_mse  = float(np.mean(mses))  if mses  else float("nan")
@@ -437,7 +437,7 @@ if len(y_pred_bins):
     wandb.log({"metrics/top1_bin_acc": float(top1_bin_acc)})
 
 # %% Plots → disk
-plot_dir = RUN_CFG["plots_dir"]
+plot_dir = config["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
 if len(k_vals):
@@ -476,7 +476,7 @@ wandb.log({
 })
 
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
 tab = wandb.Table(columns=["k","prefix","last_act","gold_days","pred_days","top_bins","top_probs"])
 for _, r in sample.iterrows():
     pred_days, top_bins, top_probs = predict_time(r["prefix"], r["last_act"], r["elapsed_days"], return_topk=3)

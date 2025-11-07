@@ -113,7 +113,6 @@ train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed
 val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_val.csv")
 test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/next_activity_test.csv")
 
-
 for d in (train_df, val_df, test_df):
     d.rename(columns={"next_act": "next_activity"}, inplace=True)
     d["prefix"] = d["prefix"].astype(str).str.split() # convert space-separated strings to lists
@@ -383,7 +382,7 @@ wandb.log({
     "metrics/top5_acc": float(topk_accuracy(y_all, topk_all, k=5)),
 })
 
-# Acc/F1 vs k
+# %% Acc/F1 vs k
 if len(k_vals):
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, accuracies, marker="o", label="Accuracy")
@@ -415,7 +414,7 @@ wandb.log({
     "metrics/avg_recall": avg_recall,
 })
 
-# %% Robust confusion matrix (avoid KeyError by normalizing strings + union classes)
+# %% Robust confusion matrix
 def _norm(s): return str(s).strip()
 
 y_true_lbl = [_norm(x) for x in test_df["next_activity"].tolist()]
@@ -446,8 +445,8 @@ except Exception as e:
     plt.savefig(cm_path, dpi=150); plt.close()
     wandb.log({"cm_image": wandb.Image(cm_path)})
 
-# %% Sample predictions (print + W&B table), like your LSTM ACT style
-sample = test_df.sample(n=min(5, len(test_df)), random_state=42) if len(test_df) else test_df
+# %% Samples table
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
 table = wandb.Table(columns=["k", "prefix", "gold", "pred", "p_pred", "top5", "top5_p"])
 
 for _, r in sample.iterrows():

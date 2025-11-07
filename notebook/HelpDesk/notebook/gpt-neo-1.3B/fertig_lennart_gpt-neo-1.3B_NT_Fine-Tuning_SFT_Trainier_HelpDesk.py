@@ -104,7 +104,6 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-ts = datetime.now().strftime("%Y%m%d_%H%M%S")
 run = wandb.init(
     project=f"gpt-neo-1.3B_NT_FineTuning_{config['dataset']}",
     entity="privajet-university-of-mannheim",

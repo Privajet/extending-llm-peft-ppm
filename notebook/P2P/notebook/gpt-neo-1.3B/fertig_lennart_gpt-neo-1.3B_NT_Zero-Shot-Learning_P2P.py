@@ -42,7 +42,8 @@ DATASET = "P2P"
 config = {
     # bookkeeping
     "dataset":                  DATASET,
-    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/NT"
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/gpt-neo-1.3B/ZS/NT",
+    "unit":                     "days"
 }
 
 ZS_CFG = {
@@ -267,7 +268,8 @@ wandb.config.update({
     "prompt_template": ZS_CFG["prompt_tmpl"],
     "n_bins": n_bins,
     "bin_edges": [float(x) for x in BIN_EDGES],
-    "bin_labels": BIN_LABELS
+    "bin_labels": BIN_LABELS,
+    "unit": config["unit"],
 }, allow_val_change=True)
 
 # %% Scoring (batch over candidate bins)

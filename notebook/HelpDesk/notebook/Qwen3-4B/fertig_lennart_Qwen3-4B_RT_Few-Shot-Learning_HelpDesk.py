@@ -42,16 +42,78 @@ from collections import OrderedDict
 import wandb
 from transformers import AutoTokenizer, AutoModelForCausalLM
 
-# %% Repro + logging
-SEED = 42
-random.seed(SEED); np.random.seed(SEED); torch.manual_seed(SEED)
-if torch.cuda.is_available():
-    torch.cuda.manual_seed_all(SEED)
-    torch.backends.cudnn.deterministic = True
-    torch.backends.cudnn.benchmark = False
+# %% W&B
+api_key = os.getenv("WANDB_API_KEY")
+wandb.login(key=api_key) if api_key else wandb.login()
 
-logging.basicConfig(
-    level=logging.INFO,
+# %% 
+DATASET = "HelpDesk"
+
+config = {
+    # bookkeeping
+    "dataset":                  DATASET,
+    "plots_dir":                f"/ceph/lfertig/Thesis/notebook/{DATASET}/plots/Qwen3-4B/FS/RT",
+    "unit":                     "days"
+}
+
+FS_CFG = {
+    # model / runtime
+    "family":                   "qwen",
+    "model_name":               "Qwen/Qwen3-4B-Instruct-2507",
+    "dtype":                    "fp16",
+    "device":                   "auto",
+    # prompt & context (few-shot)
+    "n_shots":                  5,                                      # grid: [3,5]
+    "ctx_events":               20,                                     # query-tail events
+    "max_demo_events":          10,                                     # grid: [6,8,10]
+    "event_sep":                " → ",
+    # Chat system instruction to force single-label outputs
+    "system_msg":               (
+                                "You are an assistant for remaining-time prediction until case completion. "
+                                "Given a trace and a list of time bins (in days), choose EXACTLY ONE bin from the list and output ONLY that bin."
+                                ),
+    # demo/query block templates (pure text that goes inside a chat turn)
+    "prompt_tmpl_demo":         (
+                                "Trace: {trace}\n"
+                                "{maybe_elapsed}"
+                                "Answer: {gold}\n\n"
+                                ),
+    "prompt_tmpl_query":        (
+                                "Trace: {trace}\n"
+                                "{maybe_elapsed}"
+                                "Time bins:\n{labels}\n"
+                                "Answer:"
+                                ),
+    # scoring & calibration
+    "add_eos_after_label":      True,
+    "length_norm":              True,
+    "temperature":              0.9,
+    "use_class_prior":          True,
+    "prior_alpha":              0.25,
+    # optional conditional prior by last activity (train-only, no leakage)
+    "use_cond_prior_by_last_act": True,
+    "cond_alpha":               0.35,                                   # strength; 0.2–0.6 often works; tune on val
+    # validation tuning (tiny grid search)
+    "do_val_tune":              False,
+    "grid_taus":                [0.7, 0.85, 1.0, 1.2],
+    "grid_alphas":              [0.0, 0.15, 0.25, 0.4],
+    "grid_cond":                [0.0, 0.25, 0.35, 0.5],
+    "ctx_events_grid":          [8, 12, 16],
+    # binning
+    "num_bins":                 20,
+    "min_bin_count":            5,
+    "clip_low_high":            (1e-6, None),
+}
+
+# %%
+config["seed"] = 41
+random.seed(config["seed"]);
+np.random.seed(config["seed"]); 
+torch.manual_seed(config["seed"])
+if torch.cuda.is_available(): 
+    torch.cuda.manual_seed_all(config["seed"])
+
+logging.basicConfig(level=logging.INFO,
     format="%(asctime)s %(levelname)s: %(message)s",
     handlers=[logging.StreamHandler(sys.stdout)]
 )
@@ -59,85 +121,21 @@ log = logging.getLogger(__name__)
 log.info("PyTorch: %s | CUDA available: %s", torch.__version__, torch.cuda.is_available())
 if torch.cuda.is_available(): log.info("GPU: %s", torch.cuda.get_device_name(0))
 
-# %% W&B
-api_key = os.getenv("WANDB_API_KEY")
-wandb.login(key=api_key) if api_key else wandb.login()
 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-# %% Configs (mirrors ZS layout)
-RUN_CFG = {
-    "seed": SEED,
-    "case_col": "case:concept:name",
-    "act_col":  "concept:name",
-    "time_col": "time:timestamp",
-    "plots_dir": "/ceph/lfertig/Thesis/notebook/HelpDesk/plots/Qwen3-4B/FS/RT",
-    "unit": "days",
-}
-
-FS_CFG = {
-    # model / runtime
-    "family": "qwen",
-    "model_name": "Qwen/Qwen3-4B-Instruct-2507",
-    "dtype": "fp16",
-    "device": "auto",
-    # prompt & context (few-shot)
-    "n_shots": 5,               # grid: [3,5]
-    "ctx_events": 20,           # query-tail events
-    "max_demo_events": 10,      # grid: [6,8,10]
-    "event_sep": " → ",
-    # Chat system instruction to force single-label outputs
-    "system_msg": (
-        "You are an assistant for remaining-time prediction. "
-        "Given a trace and a list of time bins (in days), choose EXACTLY ONE bin from the list and output ONLY that bin. "
-        "No extra text, punctuation, or explanations."
-    ),
-    # demo/query block templates (pure text that goes inside a chat turn)
-    "prompt_tmpl_demo": (
-        "Trace: {trace}\n"
-        "{maybe_elapsed}"
-        "Time bins (in days):\n{labels}\n"
-        "Answer: {gold}\n\n"
-        ),
-    "prompt_tmpl_query": (
-        "Trace: {trace}\n"
-        "{maybe_elapsed}"
-        "Time bins (in days):\n{labels}\n"
-        "Answer:"
-        ),
-    # scoring & calibration
-    "add_eos_after_label": True,
-    "length_norm": True,
-    "temperature": 0.9,
-    "use_class_prior": True,
-    "prior_alpha": 0.25,
-    # optional conditional prior by last activity (train-only, no leakage)
-    "use_cond_prior_by_last_act": True,
-    "cond_alpha": 0.35,   # strength; 0.2–0.6 often works; tune on val
-    # validation tuning (tiny grid search)
-    "do_val_tune": False,
-    "grid_taus":   [0.7, 0.85, 1.0, 1.2],
-    "grid_alphas": [0.0, 0.15, 0.25, 0.4],
-    "grid_cond":   [0.0, 0.25, 0.35, 0.5],
-    "ctx_events_grid": [8, 12, 16],
-    # binning
-    "num_bins": 20,
-    "min_bin_count": 5,
-    "clip_low_high": (1e-6, None),
-}
-
 run = wandb.init(
-    project="Qwen3-4B_RT_FewShot_HelpDesk",
+    project=f"Qwen3-4B_RT_FewShot_{config['dataset']}",
     entity="privajet-university-of-mannheim",
-    name=f"Qwen3-4B_icl_rt_{ts}",
-    config={"run_cfg": RUN_CFG, "fs_cfg": FS_CFG},
+    name=f"Qwen3-4B_fs_rt_{ts}",
+    config={"config": config, "fs_cfg": FS_CFG}
 )
 
 # %% Data
-train_df = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_train.csv")
-val_df   = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_val.csv")
-test_df  = pd.read_csv("/ceph/lfertig/Thesis/data/HelpDesk/processed/remaining_time_test.csv")
+train_df = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_train.csv")
+val_df   = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_val.csv")
+test_df  = pd.read_csv(f"/ceph/lfertig/Thesis/data/{config['dataset']}/processed/remaining_time_test.csv")
 
-def to_days(series): return series.astype(float)
+def to_days(series): 
+    return series.astype(float)
 
 for d in (train_df, val_df, test_df):
     d["prefix"] = d["prefix"].astype(str).str.split()
@@ -406,49 +404,51 @@ wandb.config.update({
 @torch.no_grad()
 def score_bins(prefix_tokens, last_act=None, elapsed_days=None):
     demos = retrieve_demos(prefix_tokens, FS_CFG["n_shots"], FS_CFG["max_demo_events"])
-    P_ids = get_prompt_ids(prefix_tokens, demos, elapsed_days)
-
-    rows, lens = [], []
-    for lbl in BIN_LABELS:
-        L = LABEL_TENSORS[lbl]
-        rows.append(torch.cat([P_ids, L], dim=0))
-        lens.append(len(L))
-
+    P_ids = get_prompt_ids(prefix_tokens, demos, elapsed_days).unsqueeze(0)  # [1, T]
     pad_id = tokenizer.pad_token_id
-    input_ids = torch.nn.utils.rnn.pad_sequence(rows, batch_first=True, padding_value=pad_id).to(DEVICE)
-    attn = (input_ids != pad_id).long()
+    attn = (P_ids != pad_id)
 
-    logits = model(input_ids=input_ids, attention_mask=attn).logits.float()
+    out = model(input_ids=P_ids, attention_mask=attn, use_cache=True)
+    base_past = out.past_key_values
+    base_logits = out.logits[:, -1, :]  # logits after the prompt (to score first label token)
 
-    cut = P_ids.size(0)
     ll = []
-    for i, Llen in enumerate(lens):
-        lp = torch.log_softmax(logits[i, cut-1:cut-1+Llen, :], dim=-1)
-        tgt = LABEL_TENSORS[BIN_LABELS[i]]
-        s = lp.gather(-1, tgt.unsqueeze(-1)).sum()
-        if FS_CFG["length_norm"] and Llen > 0:
-            s = s / Llen
+    for lbl in BIN_LABELS:
+        tgt = LABEL_TENSORS[lbl].unsqueeze(0)  # [1, L]
+        cur_past = base_past
+        last_logits = base_logits
+        s = 0.0
+
+        # Score each label token using the KV cache correctly:
+        #  - use logits *before* feeding the token to get its log-prob
+        #  - then feed the token to advance the cache for the next step
+        for t in range(tgt.size(1)):
+            s += torch.log_softmax(last_logits, dim=-1).gather(-1, tgt[:, t:t+1]).sum()
+            o = model(input_ids=tgt[:, t:t+1], past_key_values=cur_past, use_cache=True)
+            cur_past = o.past_key_values
+            last_logits = o.logits[:, -1, :]
+
+        if FS_CFG["length_norm"] and tgt.size(1) > 0:
+            s = s / tgt.size(1)
         ll.append(float(s))
-    scores = np.array(ll, dtype=np.float32)
 
-    # temperature + priors
-    scores = scores / max(1e-6, FS_CFG["temperature"])
+    scores = np.array(ll, dtype=np.float32) / max(1e-6, FS_CFG["temperature"])
     if FS_CFG["use_class_prior"]:
-        scores = scores + FS_CFG["prior_alpha"] * LOG_PRIOR
+        scores += FS_CFG["prior_alpha"] * LOG_PRIOR
     if FS_CFG["use_cond_prior_by_last_act"]:
-        scores = scores + FS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
+        scores += FS_CFG["cond_alpha"] * COND_LOG_PRIOR.get(last_act, COND_DEFAULT)
 
-    # softmax → probs
-    m = np.max(scores); probs = np.exp(scores - m); s = probs.sum()
-    probs = probs / s if s > 0 else probs
+    # → probs
+    m = np.max(scores); probs = np.exp(scores - m); Z = probs.sum()
+    probs = probs / Z if Z > 0 else probs
     return scores, probs
 
 def predict_time(prefix_tokens, last_act=None, elapsed_days=None, return_topk=3):
     scores, probs = score_bins(prefix_tokens, last_act, elapsed_days)
     idx_sorted = np.argsort(scores)[::-1]
-    pred_days = float(np.sum(probs * BIN_MIDS))  # probability-weighted midpoint
-    k = min(return_topk, n_bins)
-    top_idx = idx_sorted[:k]
+    pred_days = float(np.sum(probs * BIN_MIDS))
+    k = min(return_topk, len(BIN_LABELS))
+    top_idx   = idx_sorted[:k]
     top_bins  = [BIN_LABELS[i] for i in top_idx]
     top_probs = [float(probs[i]) for i in top_idx]
     return pred_days, top_bins, top_probs
@@ -486,20 +486,14 @@ def tune_on_val():
 
 tune_on_val()
 
-# record an example prompt
-if len(val_df):
-    ex = val_df.sample(1, random_state=SEED).iloc[0]
-    demos_ex = retrieve_demos(ex["prefix"], FS_CFG["n_shots"], FS_CFG["max_demo_events"])
-    prompt_sample = build_chat_prompt(ex["prefix"], demos_ex, ex["elapsed_days"])[:1200]
-    wandb.config.update({"prompt_sample": prompt_sample}, allow_val_change=True)
-
+# Record final knobs
 wandb.config.update({
     "final_ctx_events": FS_CFG["ctx_events"],
     "final_temperature": FS_CFG["temperature"],
     "final_prior_alpha": FS_CFG["prior_alpha"],
     "final_cond_alpha": FS_CFG.get("cond_alpha", 0.0),
     "bin_mids_days": [float(x) for x in BIN_MIDS],
-    "unit": RUN_CFG["unit"],
+    "unit": config["unit"],
 }, allow_val_change=True)
 
 # %% Per-k evaluation
@@ -528,11 +522,11 @@ print(f"Average MAE across all prefixes:  {avg_mae:.2f} days")
 print(f"Average MSE across all prefixes:  {avg_mse:.2f} (days^2)")
 print(f"Average RMSE across all prefixes: {avg_rmse:.2f} days")
 
-# (Optional) top-1 bin accuracy (coarse view)
+# (Optional) top-1 bin accuracy (coarse classification view)
 y_true_bins = test_df["bin_idx"].values if len(test_df) else np.array([])
 y_pred_bins = []
 for _, r in test_df.iterrows():
-    scores, _ = score_bins(r["prefix"], r["last_act"], r["elapsed_days"])
+    scores, _ = score_bins(r["prefix"], r["last_act"], r["elapsed_days"])  # add elapsed_days
     y_pred_bins.append(int(np.argmax(scores)))
 if len(y_pred_bins):
     top1_bin_acc = accuracy_score(y_true_bins, y_pred_bins)
@@ -540,7 +534,7 @@ if len(y_pred_bins):
     wandb.log({"metrics/top1_bin_acc": float(top1_bin_acc)})
 
 # %% Plots → disk
-plot_dir = RUN_CFG["plots_dir"]
+plot_dir = config["plots_dir"]
 os.makedirs(plot_dir, exist_ok=True)
 
 if len(k_vals):
@@ -553,8 +547,7 @@ if len(k_vals):
 
     plt.figure(figsize=(8,5))
     plt.plot(k_vals, rmses, marker='o', label='RMSE (days)')
-    plt.title('RMSE vs. Prefix Length (k)')
-    plt.xlabel('Prefix Length (k)'); plt.ylabel('RMSE (days)')
+    plt.title('RMSE vs. Prefix Length (k)'); plt.xlabel('Prefix Length (k)'); plt.ylabel('RMSE (days)')
     plt.grid(True); plt.legend(); plt.tight_layout()
     plt.savefig(os.path.join(plot_dir, f"rmse_vs_k_{ts}.png"), dpi=150); plt.close()
 
@@ -580,22 +573,20 @@ wandb.log({
 })
 
 # %% Samples table
-sample = test_df.sample(n=min(5, len(test_df)), random_state=SEED) if len(test_df) else test_df
-tab = wandb.Table(columns=["k","prefix","last_act","elapsed_days","gold_days","pred_days","top_bins","top_probs"])
+sample = test_df.sample(n=min(5, len(test_df)), random_state=config["seed"]) if len(test_df) else test_df
+tab = wandb.Table(columns=["k","prefix","last_act","gold_days","pred_days","top_bins","top_probs"])
 for _, r in sample.iterrows():
     pred_days, top_bins, top_probs = predict_time(r["prefix"], r["last_act"], r["elapsed_days"], return_topk=3)
     print("Trace:", " → ".join(r["prefix"]))
     print(f"Last act: {r['last_act']}")
-    print(f"Elapsed (days): {r['elapsed_days']:.4f}" if not (isinstance(r["elapsed_days"], float) and np.isnan(r["elapsed_days"])) else "Elapsed (days): n/a")
-    print(f"Gold RT (days): {r['rt_days']:.4f}")
-    print(f"Pred RT (days): {pred_days:.4f}")
+    print(f"Gold (days): {r['rt_days']:.4f}")
+    print(f"Pred (days): {pred_days:.4f}")
     print("Top bins:", top_bins)
     print("-"*60)
     tab.add_data(
         r["k"],
         " → ".join(r["prefix"]),
         r["last_act"],
-        (float(r["elapsed_days"]) if not (isinstance(r["elapsed_days"], float) and np.isnan(r["elapsed_days"])) else None),
         float(r["rt_days"]),
         float(pred_days),
         ", ".join(top_bins),
