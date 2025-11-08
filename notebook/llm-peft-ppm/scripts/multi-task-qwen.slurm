@@ -29,4 +29,4 @@ wandb login $WANDB_API_KEY
 
 ARGUMENTS=$(sed -n "${SLURM_ARRAY_TASK_ID}p" scripts/qwen_params.txt)
 
-python main.py $ARGUMENTS
+python fertig_lennart_next_event_prediction.py $ARGUMENTS

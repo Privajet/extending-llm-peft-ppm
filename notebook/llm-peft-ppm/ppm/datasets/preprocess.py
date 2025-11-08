@@ -93,6 +93,17 @@ def _common_preprocessing(log):
         log.loc[log.split == "test", "remaining_time_norm"] = sc.transform(
             log.loc[log.split == "test", ["remaining_time"]].values
         )
+    if "time_to_next_event" in log.columns:
+        from sklearn.preprocessing import StandardScaler
+
+        sc2 = StandardScaler()
+        sc2.fit(log.loc[log.split == "train", ["time_to_next_event"]])
+        log.loc[log.split == "train", "time_to_next_event_norm"] = sc2.transform(
+            log.loc[log.split == "train", ["time_to_next_event"]]
+        )
+        log.loc[log.split == "test", "time_to_next_event_norm"] = sc2.transform(
+            log.loc[log.split == "test", ["time_to_next_event"]].values
+        )
 
     # Augmenting the log with EOS rows
     # log = log.reset_index(drop=True)
@@ -122,9 +133,12 @@ def time_feature_engineering(log, group_cols):
     log["remaining_time"] = log.groupby(
         ["case_id", "split"], observed=True, as_index=False, group_keys=False
     ).timestamp.transform("max")
-    log["remaining_time"] = (log["remaining_time"] - log["timestamp"]).astype(
-        int
-    ) // 10**9
+    log["remaining_time"] = (log["remaining_time"] - log["timestamp"]).dt.total_seconds().astype(int)
+    
+    log["time_to_next_event"] = (
+        log.groupby(["case_id","split"], observed=True, as_index=False).timestamp.shift(-1)
+        - log["timestamp"]
+        ).dt.total_seconds().fillna(0).clip(lower=0).astype(int)
 
     # log = (
     # .assign(year=lambda df: df["timestamp"].dt.year)

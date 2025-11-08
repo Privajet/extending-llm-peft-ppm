@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=BPI20RequestForPayment_llm-peft-ppm_qwen_training
+#SBATCH --job-name=BPI12_llm-peft-ppm_qwen3-4b_training
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -33,7 +33,7 @@ nvidia-smi || true
 echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
-PROJECT="BPI20RequestForPayment_llm-peft-ppm_qwen"
+PROJECT="BPI12_llm-peft-ppm_qwen3-4b"
 LR=(0.00005)
 BATCH_SIZE=8
 EPOCHS=10
@@ -49,7 +49,7 @@ declare -a FREEZE_LAYERS=(
 )
 
 # declare -a DATASETS=(BPI12 BPI17 BPI20PrepaidTravelCosts BPI20TravelPermitData BPI20RequestForPayment)
-declare -a DATASETS=(BPI20RequestForPayment)
+declare -a DATASETS=(BPI12)
 
 # python fetch_wandb.py --project $PROJECT
 
@@ -60,13 +60,13 @@ do
         for fine_tuning in "${FINE_TUNING[@]}"
         do
             cmd="--dataset $dataset \
-                --backbone qwen25-05b \
+                --backbone qwen3-4b \
                 --embedding_size 896 \
                 --hidden_size 896 \
                 --categorical_features activity \
                 --categorical_targets activity \
                 --continuous_features all \
-                --continuous_targets remaining_time \
+                --continuous_targets remaining_time time_to_next_event \
                 --strategy sum \
                 --lr $lr \
                 --batch_size $BATCH_SIZE \
@@ -80,7 +80,7 @@ do
                     cmd2="$cmd \
                     --r $r \
                     --lora_alpha $(( r*2 ))"
-                    python next_event_prediction.py $cmd2 --wandb
+                    python fertig_lennart_next_event_prediction.py $cmd2 --wandb
                     echo $cmd2 --wandb
                 done
             else
@@ -92,7 +92,7 @@ do
                         cmd2="$cmd --freeze_layers $freeze_layers"
                     fi
                     echo $cmd2 --wandb
-                    python next_event_prediction.py $cmd2 --wandb
+                    python fertig_lennart_next_event_prediction.py $cmd2 --wandb
                 done
             fi
         done

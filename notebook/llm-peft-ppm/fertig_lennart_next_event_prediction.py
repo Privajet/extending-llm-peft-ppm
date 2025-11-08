@@ -84,6 +84,20 @@ PRETRAINED_CONFIGS = {
         "pretrained": True,
         "fine_tuning_module_path": "layers",
     },
+    "gptneo-1b3": {
+        "name": "EleutherAI/gpt-neo-1.3B",
+        "embedding_size": 2048,                 # hidden_size von GPT-Neo 1.3B
+        "hidden_size": 2048,
+        "pretrained": True,
+        "fine_tuning_module_path": "h",         # Transformer-Blockliste: model.transformer.h
+    },
+    "qwen3-4b": {
+        "name": "Qwen/Qwen3-4B-Instruct-2507",
+        "embedding_size": 4096,                 # Qwen3 4B hidden
+        "hidden_size": 4096,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",    # wie Qwen2.5/Llama
+    },
 }
 
 
@@ -119,7 +133,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="rnn",
-        choices=["llama32-1b", "qwen25-05b", "rnn", "pm-gpt2"],
+        choices=["llama32-1b", "qwen25-05b", "qwen3-4b", "gptneo-1b3", "rnn", "pm-gpt2"],
     )
     # if rnn
     parser.add_argument("--embedding_size", type=int, default=16)
@@ -157,6 +171,10 @@ def prepare_data(
     df = df[df["case:concept:name"].isin(cases_to_drop)]
 
     df = df.sort_values(by=["case:concept:name", "time:timestamp"])
+    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"], utc=True)
+    df["time_to_next_event"] = (
+        df.groupby("case:concept:name")["time:timestamp"].shift(-1) - df["time:timestamp"]
+        ).dt.total_seconds().fillna(0).clip(lower=0)
     train, test = unbiased(df, **unbiased_split_params)
 
     time_unit = "d"
@@ -179,7 +197,7 @@ def prepare_data(
     )
 
     sc = StandardScaler()
-    columns = NUMERICAL_FEATURES + ["remaining_time"]
+    columns = NUMERICAL_FEATURES + ["remaining_time", "time_to_next_event"]
     # columns = ["accumulated_time", "remaining_time"]
     train.loc[:, columns] = sc.fit_transform(train[columns])
     test.loc[:, columns] = sc.transform(test[columns])

@@ -205,14 +205,21 @@ def train_engine(
         if WANDB_AVAILABLE and use_wandb:
             wandb.log(tracker.latest())
 
-        loss_key = (
-            "test_next_activity_loss"
-            if "test_next_activity_loss" in tracker.metrics
-            else "test_next_remaining_time_loss"
-        )
-        activity_loss = tracker.latest()[loss_key]
+        metrics = tracker.latest()
+        test_loss_keys = [k for k in metrics if k.startswith("test_") and k.endswith("_loss")]
+        
+        if not test_loss_keys:
+            loss_key = (
+                "test_next_activity_loss"
+                if "test_next_activity_loss" in tracker.metrics
+                else "test_next_remaining_time_loss"
+            )
+            val_loss = float(metrics[loss_key])
+        else:
+            val_loss = float(sum(metrics[k] for k in test_loss_keys) / len(test_loss_keys))
+            
         if persist_model:
-            if activity_loss < best_loss:
+            if val_loss  < best_loss:
                 cpkt = {
                     "epoch": epoch,
                     "net": model.state_dict(),
@@ -225,14 +232,14 @@ def train_engine(
                     experiment_id="{}_{}".format(config["log"], config["backbone"]),
                 )
 
-        if activity_loss < best_loss:
+        if val_loss < best_loss:
             no_improvement = 0
         else:
             no_improvement += 1
             if no_improvement >= 15:
                 break
 
-        best_loss = min(best_loss, tracker.latest()[loss_key])
+        best_loss = min(best_loss, val_loss)
 
     optimizer.zero_grad()
     # save_confidence_level(model, test_loader, config)
