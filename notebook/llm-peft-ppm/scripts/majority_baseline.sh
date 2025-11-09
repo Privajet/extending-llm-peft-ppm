@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llm-peft-ppm_qwen25-05b
+#SBATCH --job-name=BPI12_majority_baseline
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -34,11 +34,13 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
 # Configuration
-PARAMS_FILE="scripts/qwen25-05b_params.txt" 
+PARAMS_FILE="scripts/majority_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
-PROJECT="llm-peft-ppm_qwen25-05b"
+PROJECT="llm-peft-ppm_majority_baseline"
 
+# Iterate over param lines (ignores comments and empty lines)
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
-  echo ">>> RUN: python $PY_MAIN $ARGS --project_name $PROJECT --wandb"
-  python "$PY_MAIN" $ARGS --project_name "$PROJECT" --wandb
+  CMD="python $PY_MAIN $ARGS --model majority --epochs 0 --project_name $PROJECT --wandb"
+  echo ">>> RUN: $CMD"
+  eval "$CMD"
 done

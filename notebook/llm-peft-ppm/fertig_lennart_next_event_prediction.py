@@ -30,6 +30,8 @@ from ppm.models.config import FreezeConfig
 from ppm.models import NextEventPredictor
 from ppm.wandb_utils import is_duplicate
 
+from ppm.baselines.majority_model import MajorityPredictor, estimate_from_train
+
 try:
     import wandb
 
@@ -63,8 +65,8 @@ NUMERICAL_FEATURES = [
 ]
 
 PRETRAINED_CONFIGS = {
-    "pm-gpt2": {
-        "name": "models/pm-gpt2",
+    "gpt2": {
+        "name": "gpt2",
         "embedding_size": 768,
         "hidden_size": 768,
         "pretrained": True,
@@ -86,18 +88,25 @@ PRETRAINED_CONFIGS = {
     },
     "gptneo-1b3": {
         "name": "EleutherAI/gpt-neo-1.3B",
-        "embedding_size": 2048,                 # hidden_size von GPT-Neo 1.3B
+        "embedding_size": 2048,
         "hidden_size": 2048,
         "pretrained": True,
-        "fine_tuning_module_path": "h",         # Transformer-Blockliste: model.transformer.h
+        "fine_tuning_module_path": "h",
     },
-    "qwen3-4b": {
-        "name": "Qwen/Qwen3-4B-Instruct-2507",
-        "embedding_size": 4096,                 # Qwen3 4B hidden
-        "hidden_size": 4096,
+    "qwen25-7b": {
+        "name": "Qwen/Qwen2.5-7B",
+        "embedding_size": 3584,              
+        "hidden_size": 3584,
         "pretrained": True,
-        "fine_tuning_module_path": "layers",    # wie Qwen2.5/Llama
+        "fine_tuning_module_path": "layers",   
     },
+    "gemma-2-2b": {
+        "name": "google/gemma-2-2b",
+        "embedding_size": 2304,
+        "hidden_size": 2304,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",
+},
 }
 
 
@@ -122,6 +131,8 @@ def parse_args():
     parser.add_argument("--categorical_targets", nargs="+", default=None)
     parser.add_argument("--continuous_features", nargs="+", default=None)
     parser.add_argument("--continuous_targets", nargs="+", default=None)
+    
+    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority"])
 
     """ in layer config """
     parser.add_argument(
@@ -133,7 +144,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="rnn",
-        choices=["llama32-1b", "qwen25-05b", "qwen3-4b", "gptneo-1b3", "rnn", "pm-gpt2"],
+        choices=["llama32-1b", "qwen25-05b", "qwen25-7b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn"],
     )
     # if rnn
     parser.add_argument("--embedding_size", type=int, default=16)
@@ -207,26 +218,40 @@ def prepare_data(
 
 def get_fine_tuning(fine_tuning, **kwargs):
     if fine_tuning == "lora":
-        target_modules = (
-            [
-                "q_proj",
-                "k_proj",
-                "v_proj",
-                "up_proj",
-                "down_proj",
-                "o_proj",
-                "gate_proj",
-            ]
-            if "gpt2" not in kwargs["model"]
-            else None
-        )
-        return LoraConfig(
-            task_type=TaskType.CAUSAL_LM,
-            r=kwargs["r"],
-            lora_alpha=kwargs["lora_alpha"],
-            target_modules=target_modules,
-            use_rslora=True,
-        )
+        model_name = kwargs["model"]
+        if "gptneo" in model_name:
+            return LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=None, use_rslora=True,
+            )
+        elif "gpt2" in model_name:
+            return LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=[
+                    "attn.c_attn",
+                    "attn.c_proj",
+                    "mlp.c_fc",
+                    "mlp.c_proj"
+                    ],
+                use_rslora=True,
+            )
+        else:
+            return LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=[
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "up_proj",
+                    "down_proj",
+                    "o_proj",
+                    "gate_proj"
+                    ],
+                use_rslora=True,
+            )
     elif fine_tuning == "freeze":
         return FreezeConfig(
             ix_layers=kwargs["freeze_layers"],
@@ -305,12 +330,7 @@ def main(training_config: dict):
         vocabs=train_log.get_vocabs(),
     )
 
-    dataset_device = (
-        training_config["device"]
-        if training_config["backbone"]
-        not in ["gpt2", "llama32-1b", "llama2-7b", "qwen25-05b"]
-        else "cpu"
-    )
+    dataset_device = training_config["device"]
 
     train_dataset = ContinuousTraces(
         log=train_log,
@@ -337,9 +357,21 @@ def main(training_config: dict):
         collate_fn=continuous,
     )
 
-    model_config = get_model_config(train_log, training_config)
+    if training_config["model"] == "majority":
+        # Konstanten aus TRAIN schätzen
+        maj, c_nt, c_rt = estimate_from_train(train_loader)
+        # Klassenanzahl für ACT holen (falls ACT als Target aktiv ist)
+        n_classes_act = train_log.categorical_sizes.get("activity", None)
+        model = MajorityPredictor(
+            n_classes_activity=n_classes_act,
+            majority_class_id=maj,
+            const_next_time=c_nt,
+            const_remaining_time=c_rt,
+        ).to(device=training_config["device"])
 
-    model = NextEventPredictor(**model_config).to(device=training_config["device"])
+    else:
+        model_config = get_model_config(train_log, training_config)
+        model = NextEventPredictor(**model_config).to(device=training_config["device"])
 
     trainable_params = 0
     all_param = 0
@@ -353,8 +385,13 @@ def main(training_config: dict):
         if param.requires_grad:
             trainable_params += num_params
 
+    params = [p for p in model.parameters() if p.requires_grad]
+    if not params:
+        dummy = torch.nn.Parameter(torch.zeros(1, device=training_config["device"]))
+        params = [dummy]
+
     optimizer = torch.optim.AdamW(
-        model.parameters(),
+        params,
         lr=training_config["lr"],
         weight_decay=training_config["weight_decay"],
     )
@@ -399,6 +436,7 @@ def main(training_config: dict):
 if __name__ == "__main__":
     args = parse_args()
     training_config = {
+        "model": args.model,
         # args to pop before logging
         "project_name": args.project_name,
         "wandb": args.wandb,

@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llm-peft-ppm_qwen25-05b
+#SBATCH --job-name=llm-peft-ppm_gpt2
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -34,9 +34,9 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
 # Configuration
-PARAMS_FILE="scripts/qwen25-05b_params.txt" 
+PARAMS_FILE="scripts/gpt2_params.txt" 
 PY_MAIN="fertig_lennart_next_event_prediction.py"
-PROJECT="llm-peft-ppm_qwen25-05b"
+PROJECT="llm-peft-ppm_gpt2"
 
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
   echo ">>> RUN: python $PY_MAIN $ARGS --project_name $PROJECT --wandb"

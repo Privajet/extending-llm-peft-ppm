@@ -1,0 +1,6 @@
+--dataset BPI12 --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
+--dataset BPI17 --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
+--dataset BPI19 --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
+--dataset BPI20PrepaidTravelCosts --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
+--dataset BPI20TravelPermitData --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
+--dataset BPI20RequestForPayment --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event --batch_size 32
