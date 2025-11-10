@@ -30,7 +30,7 @@ from ppm.models.config import FreezeConfig
 from ppm.models import NextEventPredictor
 from ppm.wandb_utils import is_duplicate
 
-from ppm.baselines.majority_model import MajorityPredictor, estimate_from_train
+from ppm.baselines.majority_model import MajorityPredictor
 
 try:
     import wandb
@@ -66,7 +66,7 @@ NUMERICAL_FEATURES = [
 
 PRETRAINED_CONFIGS = {
     "gpt2": {
-        "name": "gpt2",
+        "name": "openai-community/gpt2",
         "embedding_size": 768,
         "hidden_size": 768,
         "pretrained": True,
@@ -133,6 +133,7 @@ def parse_args():
     parser.add_argument("--continuous_targets", nargs="+", default=None)
     
     parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority"])
+    parser.add_argument("--majority_stat", type=str, default="mean", choices=["mean", "median"])
 
     """ in layer config """
     parser.add_argument(
@@ -331,7 +332,19 @@ def main(training_config: dict):
     )
 
     dataset_device = training_config["device"]
-
+    
+    if training_config["model"] == "majority":
+        eos_id = int(train_log.special_tokens["<EOS>"])
+        na_col = "next_activity"
+        mask = train_log.dataframe[na_col] != eos_id
+        majority_class_id = int(train_log.dataframe.loc[mask, na_col].value_counts().idxmax())
+        stat = training_config.get("majority_stat", "mean")
+        agg = "median" if stat == "median" else "mean"
+        const_next_time = float(getattr(train_log.dataframe.loc[mask, "time_to_next_event"], agg)())
+        const_remaining_time = float(
+            getattr(train_log.dataframe.loc[mask, "remaining_time"], agg)()
+        ) if "remaining_time" in train_log.dataframe.columns else 0.0
+        
     train_dataset = ContinuousTraces(
         log=train_log,
         refresh_cache=True,
@@ -356,22 +369,18 @@ def main(training_config: dict):
         shuffle=False,
         collate_fn=continuous,
     )
-
+    
+    model_config = get_model_config(train_log, training_config)
     if training_config["model"] == "majority":
-        # Konstanten aus TRAIN schätzen
-        maj, c_nt, c_rt = estimate_from_train(train_loader)
-        # Klassenanzahl für ACT holen (falls ACT als Target aktiv ist)
-        n_classes_act = train_log.categorical_sizes.get("activity", None)
         model = MajorityPredictor(
-            n_classes_activity=n_classes_act,
-            majority_class_id=maj,
-            const_next_time=c_nt,
-            const_remaining_time=c_rt,
-        ).to(device=training_config["device"])
-
+            n_classes_activity=int(len(train_log.itos["activity"])),
+            majority_class_id=majority_class_id,
+            const_next_time=const_next_time,
+            const_remaining_time=const_remaining_time,
+            padding_idx=train_log.special_tokens["<PAD>"],
+        ).to(dataset_device)
     else:
-        model_config = get_model_config(train_log, training_config)
-        model = NextEventPredictor(**model_config).to(device=training_config["device"])
+        model = NextEventPredictor(**model_config).to(device=dataset_device)
 
     trainable_params = 0
     all_param = 0
@@ -386,9 +395,6 @@ def main(training_config: dict):
             trainable_params += num_params
 
     params = [p for p in model.parameters() if p.requires_grad]
-    if not params:
-        dummy = torch.nn.Parameter(torch.zeros(1, device=training_config["device"]))
-        params = [dummy]
 
     optimizer = torch.optim.AdamW(
         params,
@@ -471,6 +477,7 @@ if __name__ == "__main__":
         "categorical_targets": args.categorical_targets,
         "continuous_targets": args.continuous_targets,
         "strategy": args.strategy,
+        "majority_stat": args.majority_stat,
     }
     # if is_duplicate(training_config):
     #     print("Duplicate configuration. Skipping...")

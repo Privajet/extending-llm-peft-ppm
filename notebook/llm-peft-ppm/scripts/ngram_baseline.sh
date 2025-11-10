@@ -1,5 +1,5 @@
 #!/bin/bash
-#SBATCH --job-name=llm-peft-ppm_majority_baseline
+#SBATCH --job-name=llm-peft-ppm_ngram_baseline
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
@@ -34,13 +34,13 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
 # Configuration
-PARAMS_FILE="scripts/majority_params.txt"
+PARAMS_FILE="scripts/ngram_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
-PROJECT="llm-peft-ppm_majority_baseline"
+PROJECT="llm-peft-ppm_ngram_baseline"
 
 # Iterate over param lines (ignores comments and empty lines)
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
-  CMD="python $PY_MAIN $ARGS --model majority --epochs 1 --project_name $PROJECT --wandb"
+  CMD="python $PY_MAIN $ARGS --model ngram --epochs 1 --project_name $PROJECT --wandb"
   echo ">>> RUN: $CMD"
   eval "$CMD"
 done
