@@ -1,0 +1,488 @@
+import pprint
+import torch
+import argparse
+import pandas as pd
+
+from typing import Tuple
+
+from torch.utils.data import DataLoader
+
+from peft import LoraConfig, TaskType
+from ppm.datasets import ContinuousTraces
+from ppm.datasets.event_logs import EventFeatures, EventLog, EventTargets
+
+from skpm.event_logs import (
+    BPI12,
+    BPI17,
+    BPI19,
+    BPI20PrepaidTravelCosts,
+    BPI20TravelPermitData,
+    BPI20RequestForPayment,
+)
+from skpm.event_logs.split import unbiased
+from skpm.feature_extraction import TimestampExtractor
+
+from sklearn.preprocessing import StandardScaler
+
+from ppm.datasets.utils import continuous
+from ppm.engine.nep import train_engine
+from ppm.models.config import FreezeConfig
+from ppm.models import NextEventPredictor
+from ppm.wandb_utils import is_duplicate
+
+from ppm.baselines.majority_model import MajorityPredictor
+
+try:
+    import wandb
+
+    WANDB_AVAILABLE = True
+except ImportError:
+    WANDB_AVAILABLE = False
+
+RANDOM_SEED = 42
+torch.manual_seed(RANDOM_SEED)
+
+EVENT_LOGS = {
+    "BPI12": BPI12,
+    "BPI17": BPI17,
+    "BPI19": BPI19,
+    "BPI20PrepaidTravelCosts": BPI20PrepaidTravelCosts,
+    "BPI20TravelPermitData": BPI20TravelPermitData,
+    "BPI20RequestForPayment": BPI20RequestForPayment,
+}
+
+NUMERICAL_FEATURES = [
+    "accumulated_time",
+    "day_of_month",
+    "day_of_week",
+    "day_of_year",
+    "hour_of_day",
+    "min_of_hour",
+    "month_of_year",
+    "sec_of_min",
+    "secs_within_day",
+    "week_of_year",
+]
+
+PRETRAINED_CONFIGS = {
+    "gpt2": {
+        "name": "openai-community/gpt2",
+        "embedding_size": 768,
+        "hidden_size": 768,
+        "pretrained": True,
+        "fine_tuning_module_path": "h",
+    },
+    "llama32-1b": {
+        "name": "meta-llama/Llama-3.2-1B",
+        "embedding_size": 2048,
+        "hidden_size": 2048,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",
+    },
+    "qwen25-05b": {
+        "name": "Qwen/Qwen2.5-0.5B",
+        "embedding_size": 896,
+        "hidden_size": 896,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",
+    },
+    "gptneo-1b3": {
+        "name": "EleutherAI/gpt-neo-1.3B",
+        "embedding_size": 2048,
+        "hidden_size": 2048,
+        "pretrained": True,
+        "fine_tuning_module_path": "h",
+    },
+    "qwen25-7b": {
+        "name": "Qwen/Qwen2.5-7B",
+        "embedding_size": 3584,              
+        "hidden_size": 3584,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",   
+    },
+    "gemma-2-2b": {
+        "name": "google/gemma-2-2b",
+        "embedding_size": 2304,
+        "hidden_size": 2304,
+        "pretrained": True,
+        "fine_tuning_module_path": "layers",
+},
+}
+
+
+def parse_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dataset", type=str, default="BPI12")
+    parser.add_argument("--wandb", action="store_true", default=False)
+    parser.add_argument("--persist_model", action="store_true", default=False)
+    parser.add_argument("--project_name", type=str, default="multi-task-icpm")
+
+    """ training config """
+    parser.add_argument("--device", type=str, default="cuda")
+    parser.add_argument("--epochs", type=int, default=25)
+    parser.add_argument("--batch_size", type=int, default=16)
+    parser.add_argument("--lr", type=float, default=1e-4)
+    parser.add_argument("--weight_decay", type=float, default=0.1)
+    parser.add_argument("--grad_clip", type=float, default=5.0)
+
+    """ features and tasks """
+    # e.g.: python main --categorical_features a b
+    parser.add_argument("--categorical_features", nargs="+", default=None)
+    parser.add_argument("--categorical_targets", nargs="+", default=None)
+    parser.add_argument("--continuous_features", nargs="+", default=None)
+    parser.add_argument("--continuous_targets", nargs="+", default=None)
+    
+    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority"])
+    parser.add_argument("--majority_stat", type=str, default="mean", choices=["mean", "median"])
+
+    """ in layer config """
+    parser.add_argument(
+        "--strategy", type=str, default="concat", choices=["sum", "concat"]
+    )
+
+    """ model config """
+    parser.add_argument(
+        "--backbone",
+        type=str,
+        default="rnn",
+        choices=["llama32-1b", "qwen25-05b", "qwen25-7b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn"],
+    )
+    # if rnn
+    parser.add_argument("--embedding_size", type=int, default=16)
+    parser.add_argument("--hidden_size", type=int, default=32)
+    parser.add_argument("--n_layers", type=int, default=1)
+    parser.add_argument(
+        "--rnn_type", type=str, default="lstm", choices=["lstm", "gru", "rnn"]
+    )
+
+    """ if fine-tuning """
+    parser.add_argument(
+        "--fine_tuning", type=str, default=None, choices=["lora", "freeze"]
+    )
+    # if lora
+    parser.add_argument("--r", type=int, default=None)
+    parser.add_argument("--lora_alpha", type=int, default=None)
+    # if freeze
+    parser.add_argument(
+        "--freeze_layers",
+        nargs="+",
+        type=int,
+        default=None,
+        help="List of layer indices to freeze. If None, all layers are frozen.",
+    )
+
+    return parser.parse_args()
+
+
+def prepare_data(
+    df: pd.DataFrame, unbiased_split_params: dict
+) -> Tuple[pd.DataFrame, pd.DataFrame]:
+    df = df.loc[:, ["case:concept:name", "concept:name", "time:timestamp"]]
+    cases_to_drop = df.groupby("case:concept:name").size() > 2
+    cases_to_drop = cases_to_drop[cases_to_drop].index
+    df = df[df["case:concept:name"].isin(cases_to_drop)]
+
+    df = df.sort_values(by=["case:concept:name", "time:timestamp"])
+    df["time:timestamp"] = pd.to_datetime(df["time:timestamp"], utc=True)
+    df["time_to_next_event"] = (
+        df.groupby("case:concept:name")["time:timestamp"].shift(-1) - df["time:timestamp"]
+        ).dt.total_seconds().fillna(0).clip(lower=0)
+    train, test = unbiased(df, **unbiased_split_params)
+
+    time_unit = "d"
+    ts = TimestampExtractor(
+        case_features=["accumulated_time", "remaining_time"],
+        event_features="all",
+        time_unit=time_unit,
+    )
+    train[ts.get_feature_names_out()] = ts.fit_transform(train)
+    test[ts.get_feature_names_out()] = ts.transform(test)
+
+    train = train.drop(columns=["time:timestamp"])
+    test = test.drop(columns=["time:timestamp"])
+
+    train = train.rename(
+        columns={"case:concept:name": "case_id", "concept:name": "activity"}
+    )
+    test = test.rename(
+        columns={"case:concept:name": "case_id", "concept:name": "activity"}
+    )
+
+    sc = StandardScaler()
+    columns = NUMERICAL_FEATURES + ["remaining_time", "time_to_next_event"]
+    # columns = ["accumulated_time", "remaining_time"]
+    train.loc[:, columns] = sc.fit_transform(train[columns])
+    test.loc[:, columns] = sc.transform(test[columns])
+
+    return train, test
+
+
+def get_fine_tuning(fine_tuning, **kwargs):
+    if fine_tuning == "lora":
+        model_name = kwargs["model"]
+        if "gptneo" in model_name:
+            return LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=None, use_rslora=True,
+            )
+        elif "gpt2" in model_name:
+            return LoraConfig(
+                task_type=TaskType.FEATURE_EXTRACTION,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=[
+                    "attn.c_attn",
+                    "attn.c_proj",
+                    "mlp.c_fc",
+                    "mlp.c_proj"
+                    ],
+                use_rslora=True,
+            )
+        else:
+            return LoraConfig(
+                task_type=TaskType.CAUSAL_LM,
+                r=kwargs["r"], lora_alpha=kwargs["lora_alpha"],
+                target_modules=[
+                    "q_proj",
+                    "k_proj",
+                    "v_proj",
+                    "up_proj",
+                    "down_proj",
+                    "o_proj",
+                    "gate_proj"
+                    ],
+                use_rslora=True,
+            )
+    elif fine_tuning == "freeze":
+        return FreezeConfig(
+            ix_layers=kwargs["freeze_layers"],
+            module_path=kwargs["fine_tuning_module_path"],
+        )
+    elif fine_tuning is None:
+        return
+    else:
+        raise ValueError("Invalid fine-tuning strategy")
+
+
+def get_model_config(train_log: EventLog, training_config: dict):
+    pretrained_config = PRETRAINED_CONFIGS.get(training_config["backbone"], {})
+    if pretrained_config:
+        fine_tuning = get_fine_tuning(
+            fine_tuning=training_config["fine_tuning"],
+            r=training_config["r"],
+            lora_alpha=training_config["lora_alpha"],
+            freeze_layers=training_config["freeze_layers"],
+            fine_tuning_module_path=pretrained_config["fine_tuning_module_path"],
+            model=training_config["backbone"],
+        )
+        pretrained_config["fine_tuning"] = fine_tuning
+    if training_config["backbone"] != "rnn":
+        backbone_hf_name = pretrained_config["name"]
+    else:
+        backbone_hf_name = "rnn"
+    return {
+        "embedding_size": training_config["embedding_size"],
+        "categorical_cols": train_log.features.categorical,
+        "categorical_sizes": train_log.categorical_sizes,
+        "numerical_cols": train_log.features.numerical,
+        "categorical_targets": train_log.targets.categorical,
+        "numerical_targets": train_log.targets.numerical,
+        "padding_idx": train_log.special_tokens["<PAD>"],
+        "strategy": training_config["strategy"],
+        "backbone_name": backbone_hf_name,
+        "backbone_pretrained": True if pretrained_config else False,
+        "backbone_finetuning": pretrained_config.get("fine_tuning", None),
+        "backbone_type": training_config.get("rnn_type", None),
+        "backbone_hidden_size": training_config["hidden_size"],
+        "backbone_n_layers": training_config.get("n_layers", None),
+        "device": training_config["device"],
+    }
+
+
+def main(training_config: dict):
+    log = EVENT_LOGS[training_config["log"]]()
+    train, test = prepare_data(log.dataframe, log.unbiased_split_params)
+
+    event_features = EventFeatures(
+        categorical=training_config["categorical_features"],
+        numerical=training_config["continuous_features"],
+    )
+    event_targets = EventTargets(
+        categorical=training_config["categorical_targets"],
+        numerical=training_config["continuous_targets"],
+    )
+
+    train_log = EventLog(
+        dataframe=train,
+        case_id="case_id",
+        features=event_features,
+        targets=event_targets,
+        train_split=True,
+        name=training_config["log"],
+    )
+
+    test_log = EventLog(
+        dataframe=test,
+        case_id="case_id",
+        features=event_features,
+        targets=event_targets,
+        train_split=False,
+        name=training_config["log"],
+        vocabs=train_log.get_vocabs(),
+    )
+
+    dataset_device = training_config["device"]
+    
+    if training_config["model"] == "majority":
+        eos_id = int(train_log.special_tokens["<EOS>"])
+        na_col = "next_activity"
+        mask = train_log.dataframe[na_col] != eos_id
+        majority_class_id = int(train_log.dataframe.loc[mask, na_col].value_counts().idxmax())
+        stat = training_config.get("majority_stat", "mean")
+        agg = "median" if stat == "median" else "mean"
+        const_next_time = float(getattr(train_log.dataframe.loc[mask, "time_to_next_event"], agg)())
+        const_remaining_time = float(
+            getattr(train_log.dataframe.loc[mask, "remaining_time"], agg)()
+        ) if "remaining_time" in train_log.dataframe.columns else 0.0
+        
+    train_dataset = ContinuousTraces(
+        log=train_log,
+        refresh_cache=True,
+        device=dataset_device,
+    )
+    test_dataset = ContinuousTraces(
+        log=test_log,
+        refresh_cache=True,
+        device=dataset_device,
+    )
+
+    train_loader = DataLoader(
+        train_dataset,
+        batch_size=training_config["batch_size"],
+        shuffle=False,
+        collate_fn=continuous,
+    )
+
+    test_loader = DataLoader(
+        test_dataset,
+        batch_size=training_config["batch_size"],
+        shuffle=False,
+        collate_fn=continuous,
+    )
+    
+    model_config = get_model_config(train_log, training_config)
+    if training_config["model"] == "majority":
+        model = MajorityPredictor(
+            n_classes_activity=int(len(train_log.itos["activity"])),
+            majority_class_id=majority_class_id,
+            const_next_time=const_next_time,
+            const_remaining_time=const_remaining_time,
+            padding_idx=train_log.special_tokens["<PAD>"],
+        ).to(dataset_device)
+    else:
+        model = NextEventPredictor(**model_config).to(device=dataset_device)
+
+    trainable_params = 0
+    all_param = 0
+    for _, param in model.named_parameters():
+        num_params = param.numel()
+        # if using DS Zero 3 and the weights are initialized empty
+        if num_params == 0 and hasattr(param, "ds_numel"):
+            num_params = param.ds_numel
+
+        all_param += num_params
+        if param.requires_grad:
+            trainable_params += num_params
+
+    params = [p for p in model.parameters() if p.requires_grad]
+
+    optimizer = torch.optim.AdamW(
+        params,
+        lr=training_config["lr"],
+        weight_decay=training_config["weight_decay"],
+    )
+
+    training_config.update(
+        {
+            "total_params": all_param,
+            "trainable_params": trainable_params,
+        }
+    )
+
+    use_wandb = training_config.pop("wandb")
+    persist_model = training_config.pop("persist_model")
+    if use_wandb and WANDB_AVAILABLE:
+        if (
+            "freeze_layers" in training_config
+            and training_config["freeze_layers"] is not None
+        ):
+            training_config["freeze_layers"] = ",".join(
+                [str(i) for i in training_config["freeze_layers"]]
+            )
+        wandb.init(project=training_config.pop("project_name"), config=training_config)
+        wandb.watch(model, log="all")
+
+    print("=" * 80)
+    print("Training")
+    train_engine(
+        model=model,
+        train_loader=train_loader,
+        test_loader=test_loader,
+        optimizer=optimizer,
+        config=training_config,
+        use_wandb=use_wandb,
+        persist_model=persist_model,
+    )
+    print("=" * 80)
+
+    if use_wandb and WANDB_AVAILABLE:
+        wandb.finish()
+
+
+if __name__ == "__main__":
+    args = parse_args()
+    training_config = {
+        "model": args.model,
+        # args to pop before logging
+        "project_name": args.project_name,
+        "wandb": args.wandb,
+        "persist_model": args.persist_model,
+        # args to log
+        "log": args.dataset,
+        "device": args.device,
+        # architecture
+        "backbone": args.backbone,
+        "rnn_type": args.rnn_type,
+        "embedding_size": args.embedding_size,
+        "hidden_size": args.hidden_size,
+        "n_layers": args.n_layers,
+        # hyperparameters
+        "lr": args.lr,
+        "batch_size": args.batch_size,
+        "weight_decay": args.weight_decay,
+        "grad_clip": args.grad_clip,
+        "epochs": args.epochs,
+        # fine-tuning
+        "fine_tuning": args.fine_tuning,
+        "r": args.r,  # LoRA
+        "lora_alpha": args.lora_alpha,  # LoRA
+        "freeze_layers": args.freeze_layers,  # Freeze
+        # features and tasks
+        "categorical_features": args.categorical_features,
+        "continuous_features": (
+            NUMERICAL_FEATURES
+            if "all" in args.continuous_features
+            else args.continuous_features
+        ),
+        "categorical_targets": args.categorical_targets,
+        "continuous_targets": args.continuous_targets,
+        "strategy": args.strategy,
+        "majority_stat": args.majority_stat,
+    }
+    # if is_duplicate(training_config):
+    #     print("Duplicate configuration. Skipping...")
+    #     exit(0)
+
+    pprint.pprint(training_config)
+    print("=" * 80)
+    main(training_config)

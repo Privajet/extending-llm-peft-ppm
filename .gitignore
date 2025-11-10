@@ -15,7 +15,6 @@ runs/
 
 # Data files (adjust as needed)
 external/*
-notebook/llm-peft-ppm/
 models/
 logs/
 achieve/
