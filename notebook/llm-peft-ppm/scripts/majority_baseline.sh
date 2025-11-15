@@ -38,9 +38,8 @@ PARAMS_FILE="scripts/majority_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
 PROJECT="llm-peft-ppm_majority_baseline"
 
-# Iterate over param lines (ignores comments and empty lines)
+# # Iterate over param lines (ignores comments and empty lines)
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
-  CMD="python $PY_MAIN $ARGS --model majority --epochs 1 --project_name $PROJECT --wandb"
-  echo ">>> RUN: $CMD"
-  eval "$CMD"
+  echo ">>> RUN: python $PY_MAIN $ARGS --epochs 1 --project_name $PROJECT --wandb"
+  python "$PY_MAIN" $ARGS --project_name "$PROJECT" --wandb
 done

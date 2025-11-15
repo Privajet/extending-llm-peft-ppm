@@ -132,8 +132,7 @@ def parse_args():
     parser.add_argument("--continuous_features", nargs="+", default=None)
     parser.add_argument("--continuous_targets", nargs="+", default=None)
     
-    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority"])
-    parser.add_argument("--majority_stat", type=str, default="mean", choices=["mean", "median"])
+    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority", "tabpfn"])
 
     """ in layer config """
     parser.add_argument(
@@ -145,7 +144,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="rnn",
-        choices=["llama32-1b", "qwen25-05b", "qwen25-7b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn"],
+        choices=["llama32-1b", "qwen25-05b", "qwen25-7b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn", "transformer"],
     )
     # if rnn
     parser.add_argument("--embedding_size", type=int, default=16)
@@ -276,10 +275,14 @@ def get_model_config(train_log: EventLog, training_config: dict):
             model=training_config["backbone"],
         )
         pretrained_config["fine_tuning"] = fine_tuning
-    if training_config["backbone"] != "rnn":
+        
+    if training_config["backbone"] == "rnn":
+        backbone_hf_name = "rnn"
+    elif pretrained_config:                     
         backbone_hf_name = pretrained_config["name"]
     else:
-        backbone_hf_name = "rnn"
+        backbone_hf_name = training_config["backbone"]
+        
     return {
         "embedding_size": training_config["embedding_size"],
         "categorical_cols": train_log.features.categorical,
@@ -331,19 +334,25 @@ def main(training_config: dict):
         vocabs=train_log.get_vocabs(),
     )
 
-    dataset_device = training_config["device"]
+    if training_config["model"] == "tabpfn":
+        from ppm.baselines.tabpfn_model import run_tabpfn_baseline
+        metrics = run_tabpfn_baseline(train_log, test_log, use_wandb=training_config.pop("wandb", False),
+                                      project_name=training_config.pop("project_name", "multi-task-icpm"))
+        print("TabPFN metrics:", {k: round(v, 6) for k, v in metrics.items()})
+        return
     
+    dataset_device = training_config["device"]
+        
     if training_config["model"] == "majority":
         eos_id = int(train_log.special_tokens["<EOS>"])
         na_col = "next_activity"
-        mask = train_log.dataframe[na_col] != eos_id
-        majority_class_id = int(train_log.dataframe.loc[mask, na_col].value_counts().idxmax())
-        stat = training_config.get("majority_stat", "mean")
-        agg = "median" if stat == "median" else "mean"
-        const_next_time = float(getattr(train_log.dataframe.loc[mask, "time_to_next_event"], agg)())
+        mask = train_log.dataframe[na_col] != eos_id  # <EOS> nicht zählen
+        majority_class_id = int(train_log.dataframe.loc[mask, na_col].mode().iloc[0])
+        const_next_time = float(train_log.dataframe.loc[mask, "time_to_next_event"].mean())
         const_remaining_time = float(
-            getattr(train_log.dataframe.loc[mask, "remaining_time"], agg)()
-        ) if "remaining_time" in train_log.dataframe.columns else 0.0
+            train_log.dataframe.loc[mask, "remaining_time"].mean()
+            if "remaining_time" in train_log.dataframe.columns else 0.0
+        )
         
     train_dataset = ContinuousTraces(
         log=train_log,
@@ -371,6 +380,7 @@ def main(training_config: dict):
     )
     
     model_config = get_model_config(train_log, training_config)
+    
     if training_config["model"] == "majority":
         model = MajorityPredictor(
             n_classes_activity=int(len(train_log.itos["activity"])),
@@ -477,7 +487,6 @@ if __name__ == "__main__":
         "categorical_targets": args.categorical_targets,
         "continuous_targets": args.continuous_targets,
         "strategy": args.strategy,
-        "majority_stat": args.majority_stat,
     }
     # if is_duplicate(training_config):
     #     print("Duplicate configuration. Skipping...")

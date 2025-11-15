@@ -18,3 +18,4 @@ dependencies:
       - torchmetrics==1.7.4
       - datasets==4.0.0
       - "skpm @ git+https://github.com/raseidi/skpm.git"
+      - tabpfn
