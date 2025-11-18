@@ -1,90 +1,72 @@
-from __future__ import annotations
-import numpy as np
-import pandas as pd
-from typing import Dict, List
-
-from sklearn.metrics import accuracy_score, mean_squared_error, r2_score
-
+from sklearn.metrics import accuracy_score, mean_squared_error
 from tabpfn import TabPFNClassifier, TabPFNRegressor
+from tabpfn_extensions.many_class import ManyClassClassifier
 
-from ppm.datasets.event_logs import EventLog
 
-def _mask_valid_next(df: pd.DataFrame, next_col: str, eos_id: int) -> pd.Series:
-    return df[next_col] != eos_id
+def run_tabpfn_baseline(train_log, test_log, random_state: int):
+    """
+    - Klassifikation: next_activity
+    - Regression: remaining_time, time_to_next_event
+    """
 
-def _build_xy_na(train_log: EventLog, test_log: EventLog) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    cur_act = "activity"
-    next_act = "next_activity"
-    eos_id = int(train_log.special_tokens["<EOS>"])
-
-    num_cols: List[str] = list(train_log.features.numerical)
-    for leak in ["remaining_time", "time_to_next_event"]:
-        if leak in num_cols:
-            num_cols.remove(leak)
-
-    feat_cols = [cur_act] + num_cols
-
-    tr_mask = _mask_valid_next(train_log.dataframe, next_act, eos_id)
-    te_mask = _mask_valid_next(test_log.dataframe, next_act, eos_id)
-
-    X_tr = train_log.dataframe.loc[tr_mask, feat_cols].to_numpy()
-    y_tr = train_log.dataframe.loc[tr_mask, next_act].to_numpy().astype(int)
-
-    X_te = test_log.dataframe.loc[te_mask, feat_cols].to_numpy()
-    y_te = test_log.dataframe.loc[te_mask, next_act].to_numpy().astype(int)
+    max_n_train = 50000
+    max_n_test = 2000
     
-    return X_tr, y_tr, X_te, y_te
-
-def _build_xy_reg(train_log, test_log, target_col):
-    cur_act = "activity"
-    num_cols = list(train_log.features.numerical)
+    df_train = train_log.dataframe
+    df_test = test_log.dataframe
     
-    if target_col in num_cols:
-        num_cols.remove(target_col)
-    other_future = "time_to_next_event" if target_col == "remaining_time" else "remaining_time"
-    if other_future in num_cols:
-        num_cols.remove(other_future)
+    if len(df_train) > max_n_train:
+        df_train = df_train.sample(n=max_n_train, random_state=random_state).reset_index(drop=True)
+        
+    if len(df_test) > max_n_test:
+        df_test = df_test.sample(n=max_n_test, random_state=random_state).reset_index(drop=True)
 
-    feat_cols = [cur_act] + num_cols
-    
-    X_tr = train_log.dataframe.loc[:, feat_cols].to_numpy()
-    y_tr = train_log.dataframe.loc[:, target_col].to_numpy().astype(float)
-    
-    X_te = test_log.dataframe.loc[:, feat_cols].to_numpy()
-    y_te = test_log.dataframe.loc[:, target_col].to_numpy().astype(float)
-    
-    return X_tr, y_tr, X_te, y_te
+    feature_cols = list(train_log.features.categorical) + list(train_log.features.numerical)
 
+    X_train = df_train[feature_cols].to_numpy()
+    X_test = df_test[feature_cols].to_numpy()
 
-def run_tabpfn_baseline(train_log: EventLog, test_log: EventLog) -> Dict[str, float]:
-    metrics: Dict[str, float] = {}
+    metrics = {}
 
-    if "activity" in test_log.targets.categorical:
-        X_tr, y_tr, X_te, y_te = _build_xy_na(train_log, test_log)
-        clf = TabPFNClassifier(ignore_pretraining_limits=True)
-        clf.fit(X_tr, y_tr)
-        y_pred = clf.predict(X_te)
-        acc = accuracy_score(y_te, y_pred)
-        metrics["test_na_acc"] = float(acc)
+    # Classification: next_activity
+    y_train_cls = df_train["next_activity"].to_numpy()
+    y_test_cls = df_test["next_activity"].to_numpy()
 
-    if "remaining_time" in [t.replace("next_", "") for t in test_log.targets.numerical] or "remaining_time" in test_log.dataframe.columns:
-        X_tr, y_tr, X_te, y_te = _build_xy_reg(train_log, test_log, target_col="remaining_time")
-        reg = TabPFNRegressor(ignore_pretraining_limits=True)
-        reg.fit(X_tr, y_tr)
-        y_hat = reg.predict(X_te)
-        mse = mean_squared_error(y_te, y_hat)
-        r2 = r2_score(y_te, y_hat)
-        metrics["test_rt_mse"] = float(mse)
-        metrics["test_rt_r2"] = float(r2)
+    base_clf = TabPFNClassifier()
+    clf = ManyClassClassifier(
+        estimator=base_clf,
+        alphabet_size=10,         
+        n_estimators=None,           
+        n_estimators_redundancy=4,   
+        random_state=random_state,
+        verbose=0,
+        codebook_config=None,
+        row_weighting_config=None,
+        aggregation_config=None,
+    )
+    clf.fit(X_train, y_train_cls)
+    y_pred_cls = clf.predict(X_test)
 
-    if "time_to_next_event" in test_log.dataframe.columns:
-        X_tr, y_tr, X_te, y_te = _build_xy_reg(train_log, test_log, target_col="time_to_next_event")
-        reg = TabPFNRegressor(ignore_pretraining_limits=True)
-        reg.fit(X_tr, y_tr)
-        y_hat = reg.predict(X_te)
-        mse = mean_squared_error(y_te, y_hat)
-        r2 = r2_score(y_te, y_hat)
-        metrics["test_nt_mse"] = float(mse)
-        metrics["test_nt_r2"] = float(r2)
+    metrics["test_next_activity_acc"] = float(accuracy_score(y_test_cls, y_pred_cls))
+
+    # Regression: remaining_time 
+    y_train_rt = df_train["remaining_time"].astype(float).to_numpy()
+    y_test_rt = df_test["remaining_time"].astype(float).to_numpy()
+
+    reg_rt = TabPFNRegressor()
+    reg_rt.fit(X_train, y_train_rt)
+    pred_rt = reg_rt.predict(X_test)
+
+    metrics["test_remaining_time_mse"] = float(mean_squared_error(y_test_rt, pred_rt))
+
+    # Regression: time_to_next_event 
+    y_train_nt = df_train["time_to_next_event"].astype(float).to_numpy()
+    y_test_nt = df_test["time_to_next_event"].astype(float).to_numpy()
+
+    reg_nt = TabPFNRegressor()
+    reg_nt.fit(X_train, y_train_nt)
+    pred_nt = reg_nt.predict(X_test)
+
+    metrics["test_time_to_next_event_mse"] = float(mean_squared_error(y_test_nt, pred_nt))
 
     return metrics

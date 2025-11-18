@@ -24,14 +24,12 @@ def read_local_experiments(project="cosmo-ltl") -> pd.DataFrame:
 
 
 def fetch_experiments(
-    project="llm-peft-ppm", 
-    include_metrics=False,
-    entity: str = "privajet",  
+    project="multi-task-benchmark", include_metrics=False
 ) -> pd.DataFrame:
     import wandb
 
     api = wandb.Api()
-    runs = api.runs(f"{entity}/{project}")
+    runs = api.runs("raseidi/" + project)
 
     experiments = pd.DataFrame()
     for r in runs:

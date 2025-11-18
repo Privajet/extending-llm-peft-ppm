@@ -38,9 +38,11 @@ PARAMS_FILE="scripts/tabpfn_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
 PROJECT="llm-peft-ppm_tabpfn_baseline"
 
-# Iterate over param lines (ignores comments and empty lines)
+SEEDS="41 42 43 44 45"
+
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
-  CMD="python $PY_MAIN $ARGS --model tabpfn --epochs 1 --project_name $PROJECT --wandb"
-  echo ">>> RUN: $CMD"
-  eval "$CMD"
+  for SEED in $SEEDS; do
+    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb"
+    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb
+  done
 done

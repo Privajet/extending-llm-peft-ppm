@@ -2,6 +2,8 @@ import pprint
 import torch
 import argparse
 import pandas as pd
+import random
+import numpy as np
 
 from typing import Tuple
 
@@ -39,8 +41,14 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
-RANDOM_SEED = 42
-torch.manual_seed(RANDOM_SEED)
+DEFAULT_SEED = 41
+
+def set_seed(seed: int):
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
 
 EVENT_LOGS = {
     "BPI12": BPI12,
@@ -73,7 +81,7 @@ PRETRAINED_CONFIGS = {
         "fine_tuning_module_path": "h",
     },
     "llama32-1b": {
-        "name": "meta-llama/Llama-3.2-1B",
+        "name": "unsloth/Llama-3.2-1B",
         "embedding_size": 2048,
         "hidden_size": 2048,
         "pretrained": True,
@@ -93,13 +101,6 @@ PRETRAINED_CONFIGS = {
         "pretrained": True,
         "fine_tuning_module_path": "h",
     },
-    "qwen25-7b": {
-        "name": "Qwen/Qwen2.5-7B",
-        "embedding_size": 3584,              
-        "hidden_size": 3584,
-        "pretrained": True,
-        "fine_tuning_module_path": "layers",   
-    },
     "gemma-2-2b": {
         "name": "google/gemma-2-2b",
         "embedding_size": 2304,
@@ -116,6 +117,7 @@ def parse_args():
     parser.add_argument("--wandb", action="store_true", default=False)
     parser.add_argument("--persist_model", action="store_true", default=False)
     parser.add_argument("--project_name", type=str, default="multi-task-icpm")
+    parser.add_argument("--few_shot_k", type=int, default=None)
 
     """ training config """
     parser.add_argument("--device", type=str, default="cuda")
@@ -124,6 +126,7 @@ def parse_args():
     parser.add_argument("--lr", type=float, default=1e-4)
     parser.add_argument("--weight_decay", type=float, default=0.1)
     parser.add_argument("--grad_clip", type=float, default=5.0)
+    parser.add_argument("--seed", type=int, default=DEFAULT_SEED)
 
     """ features and tasks """
     # e.g.: python main --categorical_features a b
@@ -144,7 +147,7 @@ def parse_args():
         "--backbone",
         type=str,
         default="rnn",
-        choices=["llama32-1b", "qwen25-05b", "qwen25-7b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn", "transformer"],
+        choices=["llama32-1b", "qwen25-05b", "gptneo-1b3", "gpt2", "gemma-2-2b", "rnn", "transformer"],
     )
     # if rnn
     parser.add_argument("--embedding_size", type=int, default=16)
@@ -303,6 +306,8 @@ def get_model_config(train_log: EventLog, training_config: dict):
 
 
 def main(training_config: dict):
+    seed = training_config.get("seed", DEFAULT_SEED)
+    set_seed(seed)
     log = EVENT_LOGS[training_config["log"]]()
     train, test = prepare_data(log.dataframe, log.unbiased_split_params)
 
@@ -333,11 +338,41 @@ def main(training_config: dict):
         name=training_config["log"],
         vocabs=train_log.get_vocabs(),
     )
+    
+    # Few-Shot approach: limit training data to k samples per class
+    k = training_config.get("few_shot_k")
+    if k is not None and k > 0:
+        df = train_log.dataframe
+
+        if "next_activity" not in df.columns:
+            raise ValueError("Few-shot mode requires column 'next_activity' in train_log.dataframe.")
+
+        print(f"Using few-shot setup: k={k} per class on column 'next_activity'")
+
+        df_shuffled = df.sample(frac=1.0, random_state=seed)
+        
+        df_fs = (
+            df_shuffled
+            .groupby("next_activity", group_keys=False)
+            .head(k)
+        )
+        df_fs = df_fs.sort_index()
+        train_log.dataframe = df_fs
 
     if training_config["model"] == "tabpfn":
         from ppm.baselines.tabpfn_model import run_tabpfn_baseline
-        metrics = run_tabpfn_baseline(train_log, test_log, use_wandb=training_config.pop("wandb", False),
-                                      project_name=training_config.pop("project_name", "multi-task-icpm"))
+        use_wandb = training_config["wandb"]
+        project_name = training_config["project_name"]
+        
+        if use_wandb and WANDB_AVAILABLE:
+            wandb.init(project=project_name, config=training_config)
+       
+        metrics = run_tabpfn_baseline(train_log, test_log, random_state=seed)
+        
+        if use_wandb and WANDB_AVAILABLE:
+            wandb.log(metrics)
+            wandb.finish()
+        
         print("TabPFN metrics:", {k: round(v, 6) for k, v in metrics.items()})
         return
     
@@ -346,7 +381,7 @@ def main(training_config: dict):
     if training_config["model"] == "majority":
         eos_id = int(train_log.special_tokens["<EOS>"])
         na_col = "next_activity"
-        mask = train_log.dataframe[na_col] != eos_id  # <EOS> nicht zählen
+        mask = train_log.dataframe[na_col] != eos_id # exclude EOS
         majority_class_id = int(train_log.dataframe.loc[mask, na_col].mode().iloc[0])
         const_next_time = float(train_log.dataframe.loc[mask, "time_to_next_event"].mean())
         const_remaining_time = float(
@@ -421,15 +456,20 @@ def main(training_config: dict):
 
     use_wandb = training_config.pop("wandb")
     persist_model = training_config.pop("persist_model")
+    
     if use_wandb and WANDB_AVAILABLE:
-        if (
-            "freeze_layers" in training_config
-            and training_config["freeze_layers"] is not None
-        ):
-            training_config["freeze_layers"] = ",".join(
-                [str(i) for i in training_config["freeze_layers"]]
-            )
-        wandb.init(project=training_config.pop("project_name"), config=training_config)
+        if "freeze_layers" in training_config and training_config["freeze_layers"] is not None:
+            training_config["freeze_layers"] = ",".join([str(i) for i in training_config["freeze_layers"]])
+            
+        if "few_shot_k" in training_config:
+            if training_config["few_shot_k"] is None:
+                training_config.pop("few_shot_k")
+            else:
+                training_config["few_shot_k"] = int(training_config["few_shot_k"])
+        
+        wandb.init(
+            project=training_config.pop("project_name"), 
+            config=training_config)
         wandb.watch(model, log="all")
 
     print("=" * 80)
@@ -472,6 +512,7 @@ if __name__ == "__main__":
         "weight_decay": args.weight_decay,
         "grad_clip": args.grad_clip,
         "epochs": args.epochs,
+        "seed": args.seed,
         # fine-tuning
         "fine_tuning": args.fine_tuning,
         "r": args.r,  # LoRA
@@ -487,6 +528,8 @@ if __name__ == "__main__":
         "categorical_targets": args.categorical_targets,
         "continuous_targets": args.continuous_targets,
         "strategy": args.strategy,
+        # few-shot parameter
+        "few_shot_k": args.few_shot_k,
     }
     # if is_duplicate(training_config):
     #     print("Duplicate configuration. Skipping...")

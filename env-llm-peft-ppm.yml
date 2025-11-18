@@ -19,3 +19,4 @@ dependencies:
       - datasets==4.0.0
       - "skpm @ git+https://github.com/raseidi/skpm.git"
       - tabpfn
+      - "tabpfn-extensions @ git+https://github.com/PriorLabs/tabpfn-extensions.git"

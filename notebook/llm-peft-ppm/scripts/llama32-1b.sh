@@ -38,7 +38,11 @@ PARAMS_FILE="scripts/llama32-1b_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
 PROJECT="llm-peft-ppm_llama32-1b"
 
+SEEDS="41 42 43 44 45"
+
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
-  echo ">>> RUN: python $PY_MAIN $ARGS --project_name $PROJECT --wandb"
-  python "$PY_MAIN" $ARGS --project_name "$PROJECT" --wandb
+  for SEED in $SEEDS; do
+    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb"
+    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb
+  done
 done
