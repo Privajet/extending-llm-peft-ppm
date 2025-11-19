@@ -1,6 +1,24 @@
 # %%
 import os
 import sys
+import warnings
+from pprint import pprint
+
+import numpy as np
+import pandas as pd
+import seaborn as sns
+import wandb
+import matplotlib as mpl
+import matplotlib.pyplot as plt
+from sklearn.preprocessing import MinMaxScaler
+
+from peft import LoraConfig, TaskType
+
+from ppm.wandb_utils import fetch_experiments
+from ppm.models import NextEventPredictor
+from ppm.models.config import FreezeConfig
+
+warnings.filterwarnings("ignore")
 
 project_root = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 os.chdir(project_root)
@@ -8,21 +26,20 @@ os.chdir(project_root)
 if project_root not in sys.path:
     sys.path.append(project_root)
 
+entity = os.environ.get("ENTITY")
+project = os.environ.get("PROJECT")
+
 print("Current working directory:", os.getcwd())
 print("project_root in sys.path:", project_root in sys.path)
 
+# %% 
+output_dir_csv = "/ceph/lfertig/Thesis/notebook/llm-peft-ppm/notebooks/csv"
+output_dir_plots = "/ceph/lfertig/Thesis/notebook/llm-peft-ppm/notebooks/plots"
+os.makedirs(output_dir_csv, exist_ok=True)
+os.makedirs(output_dir_plots, exist_ok=True)
 
 # %%
-import wandb
-import pandas as pd
-import seaborn as sns
-import matplotlib.pyplot as plt
-from sklearn.preprocessing import MinMaxScaler
-# plt.style.use("ggplot")
-
-import matplotlib as mpl
-
-# display all lines pandas
+# - display all lines pandas
 pd.set_option("display.max_rows", None)
 
 mpl.rcParams.update({
@@ -60,71 +77,9 @@ colors = [
 
 plt.rcParams["axes.prop_cycle"] = plt.cycler(color=colors)  
 
-from ppm.wandb_utils import fetch_experiments
-
-entity = os.environ.get("ENTITY")
-project = os.environ.get("PROJECT")
-
-results_dir = os.path.join("notebooks", f"{project}.csv")
-
-if os.path.exists(results_dir):
-    results = pd.read_csv(results_dir)
-else:
-    results = fetch_experiments(
-        project=project,
-        entity=entity,
-        include_metrics=True
-    )
-    results.to_csv(results_dir, index=False)
-
-print("Results by log/backbone:")
-print(results.groupby(["log", "backbone"]).size())
-
-
-# %%
-def fetch_single(
-    wandb_id: str,
-    targets=["na", "rt", "nt"], 
-    project_name: str | None = None,
-    entity: str | None = None,
-):
-    if isinstance(targets, str):
-        targets = [targets]
-
-    project_name = os.environ["PROJECT"] if project_name is None else project_name
-    entity = os.environ["ENTITY"] if entity is None else entity
-        
-    api = wandb.Api()
-    run = api.run(f"{entity}/{project_name}/{wandb_id}")
-    history = list(run.scan_history())
-
-    na_acc, na_loss, rt_loss, nt_loss = None, None, None, None
-
-    if "rt" in targets:
-        rt_loss = [row["test_next_remaining_time_loss"] 
-                   for row in history 
-                   if "test_next_remaining_time_loss" in row]
-
-    if "na" in targets:
-        na_loss = [row["test_next_activity_loss"] 
-                   for row in history 
-                   if "test_next_activity_loss" in row]
-        na_acc = [row["test_next_activity_acc"] 
-                  for row in history 
-                  if "test_next_activity_acc" in row]
-
-    if "nt" in targets:
-        nt_loss = [row["test_next_time_to_next_event_loss"] 
-                   for row in history 
-                   if "test_next_time_to_next_event_loss" in row]
-
-    return na_acc, na_loss, rt_loss, nt_loss
-
-# %%
-# Experimental setup
+# %% Experimental setup
 # - datasets' characteristics
-# - architectures and illustrations
-# - param count
+# - Architecture illustration
 
 # Datasets
 from skpm.event_logs import (
@@ -159,25 +114,18 @@ for log in logs:
     p = pd.DataFrame(p, index=[0])
     properties = pd.concat([properties, p], ignore_index=True)
 
-
-# %%
+# %% Datasets' characteristics
 properties['Trace length'] = properties.apply(
     lambda row: f"{row['tlmean']:.4f}±{row['tlstd']:.1f}",
     axis=1
 )
 properties = properties.drop(columns=["tlmean", "tlstd"])
-properties.sort_values(by="# evt.").round(4).to_csv("notebooks/log_properties.csv", index=False)
+log_props_path = os.path.join(output_dir_csv, "log_properties.csv")
+properties.sort_values(by="# evt.").round(4).to_csv(log_props_path, index=False)
 print("Log properties:")
 print(properties.sort_values(by="# evt.").round(4))
 
-# %%
-# Architecture illustration
-# supress warning
-import warnings
-warnings.filterwarnings("ignore")
-
-from pprint import pprint
-from ppm.models import NextEventPredictor
+# %% Architecture illustration
 
 rnn_example = NextEventPredictor(
     embedding_size=32,
@@ -199,8 +147,6 @@ rnn_example = NextEventPredictor(
     device="cuda",
 )
 pprint(rnn_example)
-
-from peft import LoraConfig, TaskType
 
 fine_tuning = LoraConfig(
     task_type=TaskType.CAUSAL_LM,
@@ -235,8 +181,6 @@ pprint(qwen_example)
 del qwen_example
 
 # %%
-from ppm.models.config import FreezeConfig
-
 freeze_config = FreezeConfig(
     ix_layers=[0, 1, 2],
     module_path="layers",
@@ -266,9 +210,7 @@ llama_example = NextEventPredictor(
 )
 pprint(llama_example)
 
-# %%
-# check frozen layers
-# Illustrating how the freezing fine-tuning works.
+# %% Illustrating how the freezing fine-tuning works.
 # In the `freeze_config` we pass as argument a list of `ix_layers` indicating which layer must be fine-tuned. In this case, we are fine-tuning the three first layers. All the other layers are frozen.
 
 LAYER_TO_TUNE = 0
@@ -285,185 +227,51 @@ for name, param in llama_example.backbone.layers[LAYER_TO_FREEZE].named_paramete
 del llama_example
 
 # %%
-# Experimental evaluation
-multi_task_results = results[
-    (~results["test_next_remaining_time_loss"].isna()) &
-    (~results["test_next_time_to_next_event_loss"].isna()) &
-    (~results["test_next_activity_loss"].isna()) &
-    (results.log.isin(["BPI12", "BPI17"])) & # just to smooth the plot
-    (results.backbone.str.startswith(('qwen', 'llama', 'gpt2'))) &
-    ((results["r"].isin([128, 256])) | (results["r"].isna()))
-].copy()
+def map_setting(row):
+    ft = row["fine_tuning"]
+    k  = row.get("few_shot_k", None)
+    fl = row.get("freeze_layers", None)
+    epochs = row.get("epochs", None)
 
-backbone_mapping = {
-    "llama32-1b": "Llama3.2",
-    "qwen25-05b": "Qwen2.5",
-    "gpt2": "GPT2",
-}
-multi_task_results["backbone"] = multi_task_results["backbone"].map(backbone_mapping)
-multi_task_results["fine_tuning"] = multi_task_results["fine_tuning"].map({
-    "lora": "LoRA",
-    "freeze": "Freezing",
-})
+    # LoRA Few-Shot
+    if ft == "lora" and k == 8:
+        return "FewShot-LoRA"
 
-fig, ax = plt.subplots(3, 1, figsize=(4, 4), sharex=True, dpi=100)
+    # LoRA Full
+    if ft == "lora" and pd.isna(k):
+        return "LoRA"
 
-order = ["GPT2", "Qwen2.5", "Llama3.2"]
+    # Zero-Shot
+    if ft == "freeze" and epochs == 0:
+        return "ZeroShot"
 
-# NA
-sns.boxplot(
-    data=multi_task_results,
-    x="backbone",
-    y="test_next_activity_acc",
-    hue="fine_tuning",
-    ax=ax[0],
-    order=order,
-)
+    # Freezing Few-Shot
+    if ft == "freeze" and k == 8:
+        return "FewShot-Freezing"
 
-# RT
-sns.boxplot(
-    data=multi_task_results,
-    x="backbone",
-    y="test_next_remaining_time_loss",
-    hue="fine_tuning",
-    ax=ax[1],
-    order=order,
-)
+    # Freezing standard
+    if ft == "freeze" and pd.isna(fl):
+        return "Freezing"
 
-# NT
-sns.boxplot(
-    data=multi_task_results,
-    x="backbone",
-    y="test_next_time_to_next_event_loss",
-    hue="fine_tuning",
-    ax=ax[2],
-    order=order,
-)
+    # Freezing layer configs
+    if ft == "freeze" and isinstance(fl, str):
+        fl_clean = fl.replace("[","").replace("]","").split()
+        return "Freezing-" + str(fl_clean)
 
-ax[0].set_ylabel("NA Acc.")
-ax[1].set_ylabel("RT MSE")
-ax[2].set_ylabel("NT MSE")
+    return "Other"
 
-for a in ax:
-    a.set_title("")
-    a.set_xlabel("")
-
-ax[0].legend().remove()
-ax[1].legend().remove()
-ax[2].legend(title="", ncol=2, loc="upper left")
-
-os.makedirs("notebooks/plots", exist_ok=True)
-plot_path = os.path.join("notebooks", "plots", "loss_distribution_1.pdf")
-plt.tight_layout()
-plt.savefig(plot_path, dpi=300)
-
-run = wandb.init(
-    project=project,
-    entity=entity,
-    job_type="analysis",
-    name="loss_distribution_1_plots",
-)
-
-wandb.log({"loss_distribution_1": wandb.Image(fig)})
-run.finish()
-
-# %%
-import numpy as np
-LOGS_TO_PLOT = ["BPI20PrepaidTravelCosts", "BPI12", "BPI17"]
-HUE_ORDER=["Freezing", "Freezing-[0]", "Freezing-[0,1]", "Freezing-[-1]", "Freezing-[-1,-2]"]
-HUE_MAP = {
-    "gpt2": "GPT2", 
-    "qwen25-05b": "Qwen2.5", 
-    "llama32-1b": "Llama3.2"
-}
-ORDER = ["GPT2", "Qwen2.5", "Llama3.2"]
-peft = results[
-    (results.fine_tuning.isin(("freeze",)))
-    # & (results.log.isin(LOGS_TO_PLOT))
-    # & (results.r != 128)
-    & (results.strategy != "concat")
-].reset_index(drop=True).copy()
-peft.backbone = peft.backbone.map(HUE_MAP)
-peft.fine_tuning = peft.fine_tuning.map({
-    "lora": "LoRA",
-    "freeze": "Freezing",
-})
-peft.fine_tuning = np.where(peft.freeze_layers.isna(), peft.fine_tuning, peft.fine_tuning + "-[" + peft.freeze_layers.astype(str) + "]")
-
-fig, ax = plt.subplots(3, 1, figsize=(5, 4), dpi=100, sharex=True)
-
-# NA
-sns.boxplot(
-    x="backbone",
-    y="test_next_activity_acc",
-    hue="fine_tuning",
-    hue_order=HUE_ORDER,
-    order=ORDER,
-    data=peft,
-    ax=ax[0],
-)
-
-# RT
-sns.boxplot(
-    x="backbone",
-    y="test_next_remaining_time_loss",
-    hue="fine_tuning",
-    hue_order=HUE_ORDER,
-    order=ORDER,
-    data=peft,
-    ax=ax[1],
-)
-
-# NT
-sns.boxplot(
-    x="backbone",
-    y="test_next_time_to_next_event_loss",
-    hue="fine_tuning",
-    hue_order=HUE_ORDER,
-    order=ORDER,
-    data=peft,
-    ax=ax[2],
-)
-
-ax[0].set_xlabel("")
-ax[0].set_ylabel("NA Acc.")
-ax[1].set_xlabel("")
-ax[1].set_ylabel("RT MSE")
-ax[2].set_xlabel("")
-ax[2].set_ylabel("NT MSE")
-
-ax[0].legend().remove()
-ax[1].legend().remove()
-ax[2].legend(title="", ncol=2, loc="upper left")
-
-os.makedirs("notebooks/plots", exist_ok=True)
-plot_path = os.path.join("notebooks", "plots", "loss_distribution_2.pdf")
-plt.tight_layout()
-plt.savefig(plot_path, dpi=300)
-
-run = wandb.init(
-    project=project,
-    entity=entity,
-    job_type="analysis",
-    name="loss_distribution_2_plots",
-)
-
-wandb.log({"loss_distribution_2": wandb.Image(fig)})
-run.finish()
-
-# %%
-# ## Checking best models
+# %% Checking best models
 
 BACKBONE_PROJECTS = {
-    "majority": "llm-peft-ppm_majority_baseline",
-    "rnn": "llm-peft-ppm_rnn",
-    "transformer": "llm-peft-ppm_transformer_baseline",
-    "tabpfn": "llm-peft-ppm_tabpfn_baseline",
-    "gpt2": "llm-peft-ppm_gpt2",
-    "llama32-1b": "llm-peft-ppm_llama32-1b",
-    "qwen25-05b": "llm-peft-ppm_qwen25-05b",
-    "gptneo-1b3": "llm-peft-ppm_gpt-neo-1.3B",
-    "gemma-2-2b": "llm-peft-ppm_gemma-2-2b",
+    "majority":         "llm-peft-ppm_majority_baseline",
+    "rnn":              "llm-peft-ppm_rnn",
+    "transformer":      "llm-peft-ppm_transformer_baseline",
+    "tabpfn":           "llm-peft-ppm_tabpfn_baseline",
+    "gpt2":             "llm-peft-ppm_gpt2",
+    "gptneo-1b3":       "llm-peft-ppm_gpt-neo-1.3B",
+    "qwen25-05b":       "llm-peft-ppm_qwen25-05b",
+    "llama32-1b":       "llm-peft-ppm_llama32-1b",
+    "gemma-2-2b":       "llm-peft-ppm_gemma-2-2b",
 }
 
 all_results = []
@@ -474,31 +282,32 @@ for backbone, project_name in BACKBONE_PROJECTS.items():
     df["project"] = project_name
     all_results.append(df)
 
-results = pd.concat(all_results, ignore_index=True)
+global_results = pd.concat(all_results, ignore_index=True)
 
 cols = [
-    "id", 
-    "log", 
-    "backbone", 
-    "test_next_activity_acc", 
-    "test_next_activity_loss", 
-    "test_next_remaining_time_loss", 
+    "id",
+    "log",
+    "backbone",
+    "project",
+    "fine_tuning",
+    "total_params",
+    "trainable_params",
+    "test_next_activity_acc",
+    "test_next_activity_loss",
+    "test_next_remaining_time_loss",
     "test_next_time_to_next_event_loss",
-    "project", 
-    "best_test_next_activity_acc", 
-    "best_test_next_activity_loss", 
+    "best_test_next_activity_acc",
+    "best_test_next_activity_loss",
     "best_test_next_remaining_time_loss",
     "best_test_next_time_to_next_event_loss",
-    "trainable_params",
-    "total_params",
-    "fine_tuning",
-    "_runtime"
+    "_runtime",
+    "mt_score",
 ]
 
-results_eval = results[
-    (~results["test_next_activity_loss"].isna()) &
-    (~results["test_next_remaining_time_loss"].isna()) &
-    (~results["test_next_time_to_next_event_loss"].isna())
+global_results_eval = global_results[
+    (~global_results["test_next_activity_acc"].isna()) &
+    (~global_results["test_next_remaining_time_loss"].isna()) &
+    (~global_results["test_next_time_to_next_event_loss"].isna())
 ].copy()
 
 # normalize metrics and build equal-weight multi-task score
@@ -506,144 +315,329 @@ sc_acc = MinMaxScaler()
 sc_rt  = MinMaxScaler()
 sc_nt  = MinMaxScaler()
 
-results_eval["na_norm"] = sc_acc.fit_transform(
-    results_eval[["test_next_activity_acc"]]
+global_results_eval["na_norm"] = sc_acc.fit_transform(
+    global_results_eval[["test_next_activity_acc"]]
 )
 # losses: lower is better -> negate before scaling
-results_eval["rt_norm"] = sc_rt.fit_transform(
-    -results_eval[["test_next_remaining_time_loss"]]
+global_results_eval["rt_norm"] = sc_rt.fit_transform(
+    -global_results_eval[["test_next_remaining_time_loss"]]
 )
-results_eval["nt_norm"] = sc_nt.fit_transform(
-    -results_eval[["test_next_time_to_next_event_loss"]]
-)
-
-results_eval["mt_score"] = (
-    results_eval["na_norm"] +
-    results_eval["rt_norm"] +
-    results_eval["nt_norm"]
+global_results_eval["nt_norm"] = sc_nt.fit_transform(
+    -global_results_eval[["test_next_time_to_next_event_loss"]]
 )
 
-# pick best multi-task run per (log × backbone) by mt_score
-best_idx = (
-    results_eval
+global_results_eval["mt_score"] = (
+    global_results_eval["na_norm"] +
+    global_results_eval["rt_norm"] +
+    global_results_eval["nt_norm"]
+)
+
+best_scores = (
+    global_results_eval
     .groupby(["log", "backbone"])["mt_score"]
-    .nlargest(1)
-    .index.get_level_values(2)
+    .max()
+    .dropna()
 )
 
-best = results_eval.iloc[best_idx][cols].reset_index(drop=True)
+best = global_results_eval.merge(best_scores, on=["log","backbone","mt_score"])
+best = best[cols].reset_index(drop=True)
 
-os.makedirs("notebooks", exist_ok=True)
-best_csv_path = os.path.join("notebooks", "best_models_multitask.csv")
-best.to_csv(best_csv_path, index=False)
-
-# %%
-# multi-task models
+for log_name, df_log in best.groupby("log"):
+    csv_path = os.path.join(
+        output_dir_csv,
+        f"best_runs_mt_score_{log_name}.csv"
+    )
+    df_log.to_csv(csv_path, index=False)
+    print(f"Saved best models for log={log_name} to {csv_path}")
+    
+# %% Multi-task models
 METRICS = [
-    'best_test_next_activity_acc',
-    'best_test_next_remaining_time_loss',
-    'best_test_next_time_to_next_event_loss'
+    "best_test_next_activity_acc",
+    "best_test_next_remaining_time_loss",
+    "best_test_next_time_to_next_event_loss",
 ]
-def highlight_group_min(df):
-    styles = pd.DataFrame("", index=df.index, columns=df.columns)
-    for _, group in df.groupby("Dataset"):
-        idxs = group.index
-        for col in ["NA Acc.", "RT MSE", "NT MSE"]: #METRICS:
-            min_val = group[col].max() if col in ["NA Acc.", "test_next_activity_acc", "best_test_next_activity_acc"] else group[col].min()
-            styles.loc[idxs, col] = group[col].apply(
-                lambda x: "font-weight: bold" if x == min_val else ""
-            )
-    return styles
 
-import numpy as np
+# derive high-level setting labels (LoRA, FewShot-LoRA, Freezing, etc.)
+best = best.copy()
+best["Setting"] = best.apply(map_setting, axis=1)
+
 tmp = best.reset_index(drop=True).copy()
-tmp = tmp[["log", "backbone", "fine_tuning"] + METRICS + ["total_params", "trainable_params"] + ["_runtime"]]
+tmp = tmp[
+    ["log", "backbone", "Setting", "fine_tuning"]
+    + METRICS
+    + ["total_params", "trainable_params", "_runtime"]
+]
 
 # seconds to hours
 tmp["_runtime"] = (tmp["_runtime"] / 3600.0).round(3)
 
 # params formatting
-tmp["trainable_params"] = ((tmp.trainable_params / tmp.total_params) * 100).astype(int).astype(str) + "%"
-tmp["total_params"] = tmp["total_params"].apply(lambda x: np.format_float_scientific(x, precision=1))
-tmp["# params\n(\%trainable)"] = tmp["total_params"] + "(" + tmp["trainable_params"] + ")"
+tmp["trainable_params"] = (
+    (tmp.trainable_params / tmp.total_params) * 100
+).astype(int).astype(str) + "%"
+tmp["total_params"] = tmp["total_params"].apply(
+    lambda x: np.format_float_scientific(x, precision=1)
+)
+tmp["# params\n(%trainable)"] = (
+    tmp["total_params"] + "(" + tmp["trainable_params"] + ")"
+)
 
-data = tmp.rename(columns={
-    "log": "Dataset",
-    "backbone": "Backbone",
-    "best_test_next_activity_acc": "NA Acc.",
-    "best_test_next_remaining_time_loss": "RT MSE",
-    "best_test_next_time_to_next_event_loss": "NT MSE",
-    "total_params": "# params\n(total)",
-    "trainable_params": "% params\n(trainable)",   
-    "_runtime": "Runtime (h)"
-})
+data = tmp.rename(
+    columns={
+        "log":                              "Dataset",
+        "backbone":                         "Backbone",
+        "best_test_next_activity_acc":      "NA Acc.",
+        "best_test_next_remaining_time_loss": "RT MSE",
+        "best_test_next_time_to_next_event_loss": "NT MSE",
+        "total_params":                     "# params\n(total)",
+        "trainable_params":                 "% params\n(trainable)",
+        "_runtime":                         "Runtime (h)",
+    }
+)
 
-data.Dataset = data.Dataset.map({
-    "BPI12": "BPI12",
-    "BPI17": "BPI17",
-    "BPI20PrepaidTravelCosts": "BPI20PTC",
-    "BPI20RequestForPayment": "BPI20RfP",
-    "BPI20TravelPermitData": "BPI20TPD",
-})
+# pretty dataset names (optional – you already use this)
+data.Dataset = data.Dataset.map(
+    {
+        "BPI12":                            "BPI12",
+        "BPI17":                            "BPI17",
+        "BPI20PrepaidTravelCosts":          "BPI20PTC",
+        "BPI20RequestForPayment":           "BPI20RfP",
+        "BPI20TravelPermitData":            "BPI20TPD",
+    }
+)
 
-data.Backbone = data.Backbone.map({
-    "majority": "Majority",
-    "rnn": "RNN",
-    "transformer": "Transformer",
-    "tabpfn": "TabPFN",
-    "gpt2": "GPT2", 
-    "gptneo-1b3": "GPT-Neo-1b3",
-    "llama32-1b": "Llama3.2-1b",
-    "qwen25-05b": "Qwen2.5-0.5b",
-    "gemma-2-2b": "Gemma-2-2b",
-})
+# pretty backbone names (no [LoRA] etc!)
+data.Backbone = data.Backbone.map(
+    {
+        "majority":                         "Majority",
+        "rnn":                              "RNN",
+        "transformer":                      "Transformer",
+        "tabpfn":                           "TabPFN",
+        "gpt2":                             "GPT2",
+        "gptneo-1b3":                       "GPT-Neo-1b3",
+        "qwen25-05b":                       "Qwen2.5-0.5b",
+        "llama32-1b":                       "Llama3.2-1b",
+        "gemma-2-2b":                       "Gemma-2-2b",
+    }
+)
 
-data = data.sort_values(by=["Dataset", "Backbone"])
+# you can optionally order Setting explicitly, e.g.:
+SETTING_ORDER = [
+    "ZeroShot",
+    "LoRA",
+    "FewShot-LoRA",
+    "Freezing",
+    "FewShot-Freezing",
+    "Freezing-[-1]",
+    "Freezing-[-1, -2]",
+    "Freezing-[0]",
+    "Freezing-[0, 1]",
+    "Other",
+]
+data["Setting"] = pd.Categorical(data["Setting"], categories=SETTING_ORDER, ordered=True)
 
-data.fine_tuning = data.fine_tuning.fillna("none")
-data.fine_tuning = data.fine_tuning.map({
-    "lora": "LoRA",
-    "freeze": "Freezing",
-    "none": "none"
-})
-data.Backbone = data.apply(lambda x: x["Backbone"] + " [" + x["fine_tuning"] + "]" if x["fine_tuning"] != "none" else x["Backbone"], axis=1)
+# final sort: by Dataset, Backbone, then Setting
+data = data.sort_values(by=["Dataset", "Backbone", "Setting"]).reset_index(drop=True)
 
-data = data.drop(columns=["fine_tuning"]).reset_index(drop=True)
-data = data.sort_values(by=["Dataset", "Backbone"])
-
-os.makedirs("notebooks", exist_ok=True)
-csv_path = os.path.join("notebooks", "big_table_v2.csv")
+csv_path = os.path.join(output_dir_csv, "multi-task_benchmark_results.csv")
 data.to_csv(csv_path, index=False)
 
-# %%
-import numpy as np
+# %%  Experimental evaluation
+global_multi_task_results = global_results[
+    (~global_results["test_next_remaining_time_loss"].isna()) &
+    (~global_results["test_next_time_to_next_event_loss"].isna()) &
+    (~global_results["test_next_activity_loss"].isna())
+].copy()
 
-param_summary = (
-    best.groupby("Dataset")[["total_params", "trainable_params"]]
-    .first()
-    .reset_index()
-)
+BACKBONE_LABELS = {
+    "gpt2":                                 "GPT2",
+    "gptneo-1b3":                           "GPT-Neo-1.3B",
+    "qwen25-05b":                           "Qwen-2.5-0.5B",
+    "llama32-1b":                           "Llama-3.2-1B",
+    "gemma-2-2b":                           "Gemma-2-2B",
+}
+global_multi_task_results["Backbone"] = global_multi_task_results["backbone"].map(BACKBONE_LABELS)
+
+logs_to_plot = sorted(global_multi_task_results["log"].unique())
+
+for log_name in logs_to_plot:
+    subset = global_multi_task_results[global_multi_task_results["log"] == log_name]
+
+    if subset.empty:
+        continue
+
+    fig, ax = plt.subplots(3, 1, figsize=(6, 6), sharex=True, dpi=100)
+
+    sns.boxplot(
+        data=subset,
+        x="Backbone",
+        y="test_next_activity_acc",
+        ax=ax[0],
+    )
+
+    sns.boxplot(
+        data=subset,
+        x="Backbone",
+        y="test_next_remaining_time_loss",
+        ax=ax[1],
+    )
+
+    sns.boxplot(
+        data=subset,
+        x="Backbone",
+        y="test_next_time_to_next_event_loss",
+        ax=ax[2],
+    )
+
+    ax[0].set_ylabel("NA Acc.")
+    ax[1].set_ylabel("RT MSE")
+    ax[2].set_ylabel("NT MSE")
+
+    for a in ax:
+        a.set_xlabel("")
+        a.set_title(log_name)
+
+    plt.tight_layout()
+
+    pdf_path = os.path.join(output_dir_plots, f"loss_distribution_{log_name}.pdf")
+    png_path = os.path.join(output_dir_plots, f"loss_distribution_{log_name}.png")
+    plt.savefig(pdf_path, dpi=300)
+    plt.savefig(png_path, dpi=300)
+
+    plt.close(fig)
+
+# %%
+global_results_multi = global_results.copy()
+global_results_multi["Setting"] = global_results_multi.apply(map_setting, axis=1)
+
+SETTING_ORDER = [
+    "ZeroShot",
+    "LoRA",
+    "FewShot-LoRA",
+    "Freezing",
+    "FewShot-Freezing",
+    "Freezing-[0]",
+    "Freezing-[0,1]",
+    "Freezing-[-1]",
+    "Freezing-[-1,-2]",
+]
+
+for backbone in sorted(global_results_multi["backbone"].unique()):
+    subset = global_results_multi[global_results_multi["backbone"] == backbone]
+
+    subset = subset[subset["Setting"].notna()].copy()
+    if subset.empty:
+        continue
+        
+    setting_order_current = [
+        s for s in SETTING_ORDER if s in subset["Setting"].unique()
+    ]
+    if not setting_order_current:
+        continue
+
+    fig, ax = plt.subplots(3, 1, figsize=(7, 7), sharex=True, dpi=100)
+
+    sns.boxplot(
+        data=subset,
+        x="Setting",
+        y="test_next_activity_acc",
+        order=setting_order_current,
+        ax=ax[0],
+    )
+
+    sns.boxplot(
+        data=subset,
+        x="Setting",
+        y="test_next_remaining_time_loss",
+        order=setting_order_current,
+        ax=ax[1],
+    )
+
+    sns.boxplot(
+        data=subset,
+        x="Setting",
+        y="test_next_time_to_next_event_loss",
+        order=setting_order_current,
+        ax=ax[2],
+    )
+
+    ax[0].set_ylabel("NA Acc.")
+    ax[1].set_ylabel("RT MSE")
+    ax[2].set_ylabel("NT MSE")
+    ax[2].set_xticklabels(ax[2].get_xticklabels(), rotation=45, ha='right')
+
+    fig.suptitle(f"Backbone: {backbone}", fontsize=12)
+    plt.tight_layout()
+
+    path = os.path.join(output_dir_plots, f"loss_distribution_settings_comparison_{backbone}.pdf")
+    plt.savefig(path, dpi=300)
+    plt.close(fig)
+
+# %%
+param_summary = best[["log", "total_params", "trainable_params"]].copy()
 
 param_summary["trainable_percent"] = (
     (param_summary["trainable_params"] / param_summary["total_params"]) * 100
 ).astype(int).astype(str) + "%"
 
+param_summary["total_params_fmt"] = param_summary["total_params"].apply(
+    lambda x: np.format_float_scientific(x, precision=1)
+)
+
 param_summary["# params\n(%trainable)"] = (
     param_summary["total_params_fmt"] + "(" + param_summary["trainable_percent"] + ")"
 )
 
-os.makedirs("notebooks", exist_ok=True)
-csv_path = os.path.join("notebooks", "param_summary.csv")
+csv_path = os.path.join(output_dir_csv, "param_summary.csv")
 param_summary.to_csv(csv_path, index=False)
 
 print("=== PARAMETER SUMMARY PER DATASET ===")
 print(param_summary.to_string(index=False))
 
-# %%
-# Loss curves
+# %% Loss curves
 # multi-task models
 
-loss_csv_path = os.path.join("notebooks", "final_loss_curves_multitask.csv")
+def fetch_single(
+    wandb_id: str,
+    targets=["na", "rt", "nt"], 
+    project_name: str | None = None,
+    entity: str | None = None,
+):
+    if isinstance(targets, str):
+        targets = [targets]
+
+    if project_name is None:
+        raise ValueError("fetch_single requires an explicit project_name (model project).")
+    entity = os.environ["ENTITY"] if entity is None else entity
+        
+    api = wandb.Api()
+    run = api.run(f"{entity}/{project_name}/{wandb_id}")
+    history = list(run.scan_history())
+
+    na_acc, na_loss, rt_loss, nt_loss = None, None, None, None
+
+    if "rt" in targets:
+        rt_loss = [row["test_next_remaining_time_loss"] 
+                   for row in history 
+                   if "test_next_remaining_time_loss" in row]
+
+    if "na" in targets:
+        na_loss = [row["test_next_activity_loss"] 
+                   for row in history 
+                   if "test_next_activity_loss" in row]
+        na_acc = [row["test_next_activity_acc"] 
+                  for row in history 
+                  if "test_next_activity_acc" in row]
+
+    if "nt" in targets:
+        nt_loss = [row["test_next_time_to_next_event_loss"] 
+                   for row in history 
+                   if "test_next_time_to_next_event_loss" in row]
+
+    return na_acc, na_loss, rt_loss, nt_loss
+
+# %%
+loss_csv_path = os.path.join(output_dir_csv, "final_loss_curves_multitask.csv")
 
 if os.path.exists(loss_csv_path):
     losses = pd.read_csv(loss_csv_path)
@@ -673,33 +667,24 @@ else:
     
     losses = pd.concat(losses_list, axis=0, ignore_index=True)
     
-    os.makedirs("notebooks", exist_ok=True)
     losses.to_csv(loss_csv_path, index=False)
     
 # print a small sample into the log
 print("=== MULTI-TASK LOSS CURVES (head) ===")
 print(losses.head().to_string(index=False))
 
-# %%
-LOGS_TO_PLOT = ["BPI20PrepaidTravelCosts", "BPI12", "BPI17"]
+# %% Loss curve visualization (multi-task)
+LOGS_TO_PLOT = sorted(losses["log"].unique())
 
 HUE_MAP = {
-    "majority":     "Majority",
-    "rnn":          "RNN",
-    "transformer":  "Transformer",
-    "tabpfn":       "TabPFN",
     "gpt2":         "GPT2",
     "gptneo-1b3":   "GPT-Neo-1b3",
-    "llama32-1b":   "Llama3.2-1b",
     "qwen25-05b":   "Qwen2.5-0.5b",
+    "llama32-1b":   "Llama3.2-1b",
     "gemma-2-2b":   "Gemma-2-2b",
 }
 
 HUE_ORDER = [
-    "Majority",
-    "RNN",
-    "Transformer",
-    "TabPFN",
     "GPT2",
     "GPT-Neo-1b3",
     "Qwen2.5-0.5b",
@@ -707,16 +692,17 @@ HUE_ORDER = [
     "Gemma-2-2b",
 ]
 
+# reshape into tidy format
 l = losses.melt(
     id_vars=["log", "backbone", "epoch"],
     value_vars=["na_loss", "rt_loss", "nt_loss"],
     var_name="Loss",
     value_name="Value",
-).copy()
+).dropna(subset=["Value"])
 
-l = l.dropna(subset=["Value"])
+# map model names to readable labels
 l["Backbone"] = l["backbone"].map(HUE_MAP)
-l = l[l["Backbone"].notna()] 
+l = l[l["Backbone"].notna()]
 
 LOSS_LABELS = {
     "na_loss": "NA Loss",
@@ -724,7 +710,8 @@ LOSS_LABELS = {
     "nt_loss": "NT Loss",
 }
 
-fig, axes = plt.subplots(3, len(LOGS_TO_PLOT), figsize=(12, 3), sharex=True)
+# prepare grid
+fig, axes = plt.subplots(3, len(LOGS_TO_PLOT), figsize=(4 * len(LOGS_TO_PLOT), 8), sharex=True)
 axes_iter = iter(axes.flatten())
 
 for loss_name in ["na_loss", "rt_loss", "nt_loss"]:
@@ -746,7 +733,7 @@ for loss_name in ["na_loss", "rt_loss", "nt_loss"]:
         ax.set_ylabel(LOSS_LABELS[loss_name])
         ax.set_title(log_name)
 
-        # remove legends in all but bottom-right subplot
+        # legend handling
         if (loss_name, log_name) != ("nt_loss", LOGS_TO_PLOT[-1]):
             if ax.get_legend() is not None:
                 ax.get_legend().remove()
@@ -757,18 +744,6 @@ for loss_name in ["na_loss", "rt_loss", "nt_loss"]:
 
 plt.tight_layout()
 
-# save to project folder
-os.makedirs("notebooks/plots", exist_ok=True)
-plot_path = os.path.join("notebooks", "plots", "loss_curves_multitask.png")
+plot_path = os.path.join(output_dir_plots, "loss_curves_multitask.png")
 plt.savefig(plot_path, dpi=300)
-
-# log to W&B
-run = wandb.init(
-    project=project,
-    entity=entity,
-    job_type="analysis",
-    name="loss_curves_multitask",
-)
-
-wandb.log({"loss_curves_multitask": wandb.Image(fig)})
-run.finish()
+plt.close(fig)

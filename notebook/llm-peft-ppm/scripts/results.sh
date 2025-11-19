@@ -1,12 +1,12 @@
 #!/bin/bash
-#SBATCH --job-name=llm-peft-ppm_qwen25-05b
+#SBATCH --job-name=llm-peft-ppm_results
 #SBATCH --cpus-per-task=10
 #SBATCH --mem=10G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --gres=gpu:1
 #SBATCH --partition=gpu-vram-48gb
-#SBATCH --chdir=/ceph/lfertig/Thesis/notebook/llm-peft-ppm
+#SBATCH --chdir=/ceph/lfertig/Thesis/notebook/llm-peft-ppm/notebooks
 #SBATCH --output=logs/%x_%j.out
 #SBATCH --error=logs/%x_%j.err
 
@@ -18,6 +18,15 @@ mkdir -p logs .cache/huggingface .wandb
 # Conda env
 eval "$(/ceph/lfertig/miniconda3/bin/conda shell.bash hook)"
 conda activate llm-peft-ppm
+
+# Use libstdc++ from conda env first (fix CXXABI_1.3.15 errors)
+export LD_LIBRARY_PATH="$CONDA_PREFIX/lib:${LD_LIBRARY_PATH:-}"
+
+# PYTHONPATH so ppm/ gefunden wird
+export PYTHONPATH="/ceph/lfertig/Thesis/notebook/llm-peft-ppm:${PYTHONPATH:-}"
+
+# W&B offline (kein Projekt nötig)
+export WANDB_MODE=offline
 
 # Runtime
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
@@ -34,9 +43,8 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
 # Configuration
-PY_MAIN="resulty.py"
+PY_MAIN="results.py"
 export ENTITY="privajet-university-of-mannheim"
-export PROJECT="llm-peft-ppm_gpt2"
 
 echo ">>> RUN: python $PY_MAIN"
 python "$PY_MAIN"

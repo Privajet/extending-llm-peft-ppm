@@ -58,7 +58,10 @@ def fetch_experiments(
         experiments = pd.concat((experiments, new), ignore_index=True)
 
     experiments.reset_index(inplace=True, drop=True)
-    experiments.to_csv(project + "_experiments.csv", index=False)
+    output_dir = "/ceph/lfertig/Thesis/notebook/llm-peft-ppm/notebooks/csv"
+    os.makedirs(output_dir, exist_ok=True)
+    experiments.to_csv(os.path.join(output_dir, project + "_experiments.csv"), index=False)
+
     return experiments.reset_index(drop=True)
 
 
