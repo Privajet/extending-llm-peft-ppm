@@ -5,7 +5,7 @@ from tabpfn_extensions.many_class import ManyClassClassifier
 
 def run_tabpfn_baseline(train_log, test_log, random_state: int):
     """
-    - Klassifikation: next_activity
+    - Classification: next_activity
     - Regression: remaining_time, time_to_next_event
     """
 
