@@ -14,12 +14,16 @@ lightning_logs/
 runs/
 
 # Data files (adjust as needed)
-external/*
+external/
 models/
 logs/
 achieve/
 src/
 skpm/
+notebook/BPI_Challenge_2012C/
+notebook/BPIC20_DomesticDeclarations/
+notebook/HelpDesk/
+notebook/P2P/
 # *.csv
 # *.csv.gz
 *.parquet
@@ -38,10 +42,6 @@ skpm/
 
 # Archives (modify as needed)
 .achieve/
-.archive/
 
 # Experiment or temp folders
 skpm/
-
-# Ignore test scripts
-test.py
