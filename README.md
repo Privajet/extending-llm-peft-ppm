@@ -1,7 +1,5 @@
 # Fine-Tuning LLMs for Multi-Task Predictive Process Monitoring
 
-*Paper under review.*
-
 ## Overview
 
 * This repo has code and scripts to fine-tune large language models (LLMs) for multi-task PPM.
@@ -22,18 +20,16 @@ uv pip install -r requirements.txt
 
 ```
 .
-├── data/                           # Event logs (automatically downloaded)
-├── scripts/                        # Experiment scripts and configs
+├── data/                                       # Event logs (automatically downloaded)
+├── scripts/                                    # Experiment scripts and configs
 │   ├── *.sh                        
-│   ├── *.txt                       
-│   └── *.slurm                     
-├── notebooks/                      # Analysis notebooks
-├── ppm/                            # Source code
-├── luijken_transfer_learning.py    # Competitor training script
-├── rebmann_et_al.py                # Narrative-style competitor training script
-├── next_event_prediction.py        # Main training script
-├── requirements.txt                # Python dependencies
-└── README.md                       # This file
+│   └── *.txt                                         
+├── notebooks/                                  # Analysis notebooks
+├── ppm/                                        # Source code
+├── fertig_lennart_next_event_prediction.py     # Main training script
+├── next_event_prediction.py                    # Original training script
+├── requirements.txt                            # Python dependencies
+└── README.md                                   # This file
 ```
 
 ## Data
