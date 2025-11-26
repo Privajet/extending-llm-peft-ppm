@@ -34,7 +34,7 @@ uv pip install -r requirements.txt
 
 ## Data
 
-We use five public event logs. They will be downloaded via [SkPM](https://skpm.readthedocs.io/en/latest/install/installation.html) under `data/<LOG>/`:
+We use five public event logs. They will be downloaded via [SkPM](https://skpm.readthedocs.io/en/latest/examples/01_data_api.html) under `data/<LOG>/`:
 
 * [BPI20PTC](https://doi.org/10.4121/uuid:5d2fe5e1-f91f-4a3b-ad9b-9e4126870165) (Prepaid Travel Costs)
 * [BPI20RfP](https://doi.org/10.4121/uuid:895b26fb-6f25-46eb-9e48-0dca26fcd030) (Request for Payment)
@@ -95,11 +95,11 @@ Alternatively, use the argument `--wandb` to enable wandb.
 
 ### Hyperparameter search
 
-We used Slurm on our HPC clusters. Check `scripts/*.sh`, `scripts/*.txt`, and `scripts/*.slurm` to see how to reproduce our jobs or run other configurations locally.
+Check `scripts/*.sh` and `scripts/*.txt` to see how to reproduce jobs or run other configurations locally.
 
 ## Results
 
-All metrics and analysis notebooks are in the `notebooks/` folder. Check [this notebook](notebooks/results.ipynb) for plots that have not fit in the paper.
+All metrics and analysis notebooks are in the `notebooks/` folder. Check [this notebook](notebooks/results.py) for plots.
 
 ## Contact
 
