@@ -1,4 +1,4 @@
-name: llm-peft-ppm
+name: llm-peft-ppm-saprpt
 channels:
   - conda-forge
 dependencies:
@@ -12,8 +12,8 @@ dependencies:
   - pip
   - pip:
       - peft==0.14.0
-      - torch==2.6.0
-      - transformers==4.49.0
+      - torch>=2.7.0
+      - "transformers>=4.52.4"
       - wandb==0.19.8
       - pydantic==2.11.5
       - torchmetrics==1.7.4
@@ -21,3 +21,4 @@ dependencies:
       - "skpm @ git+https://github.com/raseidi/skpm.git"
       - tabpfn
       - "tabpfn-extensions @ git+https://github.com/PriorLabs/tabpfn-extensions.git"
+      - "sap_rpt_oss @ git+https://github.com/SAP-samples/sap-rpt-1-oss.git"

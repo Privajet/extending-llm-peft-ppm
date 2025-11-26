@@ -15,6 +15,28 @@ try:
 except ImportError:
     WANDB_AVAILABLE = False
 
+def make_experiment_id(config: dict) -> str:
+    parts = [config["log"], config["backbone"]]
+
+    # ZeroShot / FewShot / normales Training
+    if config.get("epochs", 1) == 0:
+        parts.append("zeroshot")
+    else:
+        parts.append(f"ep{config['epochs']}")
+
+    # Fine-Tuning-Strategie
+    if config.get("fine_tuning"):
+        parts.append(config["fine_tuning"])
+
+    # Few-Shot
+    if config.get("few_shot_k") is not None:
+        parts.append(f"k{config['few_shot_k']}")
+
+    # Seed
+    if "seed" in config:
+        parts.append(f"seed{config['seed']}")
+
+    return "_".join(str(p) for p in parts)
 
 def train_step(
     model,
@@ -164,6 +186,43 @@ def train_engine(
     persist_model: bool,
 ):
     model.to(config["device"])
+    
+    # Zero-shot: keine Updates, nur Test-Evaluation ---
+    if config.get("epochs", 1) == 0:
+        categorical_target_metrics = {
+            f"test_{t}": ["loss", "acc"]
+            for t in test_loader.dataset.log.targets.categorical
+        }
+        numerical_target_metrics = {
+            f"test_{t}": ["loss"]
+            for t in test_loader.dataset.log.targets.numerical
+        }
+        tracker = MetricsTracker({**categorical_target_metrics, **numerical_target_metrics})
+
+        print("Zero-shot evaluation mode (epochs=0): skipping training ...")
+        tracker = eval_step(
+            model=model,
+            data_loader=test_loader,
+            tracker=tracker,
+            device=config["device"],
+        )
+        print("Zero-shot metrics:", tracker.latest())
+        if WANDB_AVAILABLE and use_wandb:
+            wandb.log(tracker.latest())
+            
+        if persist_model:
+            cpkt = {
+                "epoch": 0,
+                "net": model.state_dict(),
+                "optim": None,
+                "stoi": test_loader.dataset.log.stoi,
+                "itos": test_loader.dataset.log.itos,
+            }
+            save_checkpoint(
+                checkpoint=cpkt,
+                experiment_id=make_experiment_id(config),
+            )
+        return
 
     categorical_target_metrics = {
         f"{split}_{target}": ["loss", "acc"]
@@ -219,7 +278,7 @@ def train_engine(
             val_loss = float(sum(metrics[k] for k in test_loss_keys) / len(test_loss_keys))
             
         if persist_model:
-            if val_loss  < best_loss:
+            if val_loss < best_loss:
                 cpkt = {
                     "epoch": epoch,
                     "net": model.state_dict(),
@@ -229,7 +288,7 @@ def train_engine(
                 }
                 save_checkpoint(
                     checkpoint=cpkt,
-                    experiment_id="{}_{}".format(config["log"], config["backbone"]),
+                    experiment_id=make_experiment_id(config),
                 )
 
         if val_loss < best_loss:

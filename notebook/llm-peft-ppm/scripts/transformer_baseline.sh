@@ -1,7 +1,7 @@
 #!/bin/bash
-#SBATCH --job-name=llm-peft-ppm_qwen25-05b
+#SBATCH --job-name=llm-peft-ppm_transformer_baseline
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=10G
+#SBATCH --mem=64G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --gres=gpu:1
@@ -34,15 +34,15 @@ echo "CUDA_VISIBLE_DEVICES=$CUDA_VISIBLE_DEVICES"
 python -c "import torch,sys; print('torch', torch.__version__, 'cuda?', torch.cuda.is_available())" || true
 
 # Configuration
-PARAMS_FILE="scripts/qwen25-05b_params.txt" 
+PARAMS_FILE="scripts/transformer_params.txt" 
 PY_MAIN="fertig_lennart_next_event_prediction.py"
-PROJECT="llm-peft-ppm_qwen25-05b"
+PROJECT="llm-peft-ppm_transformer_baseline"   
 
 SEEDS="41 42 43 44 45"
 
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
   for SEED in $SEEDS; do
-    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb"
-    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb
+    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb --persist_model"
+    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb --persist_model
   done
 done

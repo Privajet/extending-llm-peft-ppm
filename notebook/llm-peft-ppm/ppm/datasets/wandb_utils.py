@@ -24,14 +24,12 @@ def read_local_experiments(project="cosmo-ltl") -> pd.DataFrame:
 
 
 def fetch_experiments(
-    project="llm-peft-ppm", 
-    include_metrics=False,
-    entity: str = "privajet",  
+    project="multi-task-benchmark", include_metrics=False
 ) -> pd.DataFrame:
     import wandb
 
     api = wandb.Api()
-    runs = api.runs(f"{entity}/{project}")
+    runs = api.runs("raseidi/" + project)
 
     experiments = pd.DataFrame()
     for r in runs:
@@ -58,10 +56,7 @@ def fetch_experiments(
         experiments = pd.concat((experiments, new), ignore_index=True)
 
     experiments.reset_index(inplace=True, drop=True)
-    output_dir = "/ceph/lfertig/Thesis/notebook/llm-peft-ppm/notebooks/csv"
-    os.makedirs(output_dir, exist_ok=True)
-    experiments.to_csv(os.path.join(output_dir, project + "_experiments.csv"), index=False)
-
+    experiments.to_csv(project + "_experiments.csv", index=False)
     return experiments.reset_index(drop=True)
 
 
