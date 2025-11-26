@@ -22,11 +22,11 @@ conda activate llm-peft-ppm
 # Runtime
 export OMP_NUM_THREADS=${SLURM_CPUS_PER_TASK}
 export MKL_NUM_THREADS=${SLURM_CPUS_PER_TASK}
-export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export PYTORCH_ALLOC_CONF=expandable_segments:True
 export HF_HOME="$PWD/.cache/huggingface"
-export TRANSFORMERS_CACHE="$HF_HOME/transformers"
 export WANDB_DIR="$PWD/.wandb"
 export TOKENIZERS_PARALLELISM=false
+export VSC_SCRATCH="/ceph/lfertig/Thesis/notebook/llm-peft-ppm"
 
 # GPU Info
 nvidia-smi || true
@@ -42,7 +42,7 @@ SEEDS="41 42 43 44 45"
 
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
   for SEED in $SEEDS; do
-    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb"
-    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb
+    echo ">>> RUN: python $PY_MAIN $ARGS --seed $SEED --project_name $PROJECT --wandb --persist_model"
+    python "$PY_MAIN" $ARGS --seed "$SEED" --project_name "$PROJECT" --wandb --persist_model
   done
 done

@@ -1,0 +1,5 @@
+--dataset BPI12 --model saprpt --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event
+--dataset BPI17 --model saprpt --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event
+--dataset BPI20PrepaidTravelCosts --model saprpt --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event
+--dataset BPI20TravelPermitData --model saprpt --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event
+--dataset BPI20RequestForPayment --model saprpt --categorical_features activity --categorical_targets activity --continuous_features all --continuous_targets remaining_time time_to_next_event

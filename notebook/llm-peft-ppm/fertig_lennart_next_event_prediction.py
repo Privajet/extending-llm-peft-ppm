@@ -135,7 +135,7 @@ def parse_args():
     parser.add_argument("--continuous_features", nargs="+", default=None)
     parser.add_argument("--continuous_targets", nargs="+", default=None)
     
-    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority", "tabpfn"])
+    parser.add_argument("--model", type=str, default="nep", choices=["nep", "majority", "tabpfn", "saprpt"])
 
     """ in layer config """
     parser.add_argument(
@@ -374,6 +374,23 @@ def main(training_config: dict):
             wandb.finish()
         
         print("TabPFN metrics:", {k: round(v, 6) for k, v in metrics.items()})
+        return
+    
+    if training_config["model"] == "saprpt":
+        from ppm.baselines.sap_rpt_model import run_sap_rpt_baseline
+        use_wandb = training_config["wandb"]
+        project_name = training_config["project_name"]
+
+        if use_wandb and WANDB_AVAILABLE:
+            wandb.init(project=project_name, config=training_config)
+
+        metrics = run_sap_rpt_baseline(train_log, test_log, random_state=seed)
+
+        if use_wandb and WANDB_AVAILABLE:
+            wandb.log(metrics)
+            wandb.finish()
+
+        print("SAP-RPT metrics:", {k: (round(v, 6) if isinstance(v, (float, int)) else v) for k, v in metrics.items()})
         return
     
     dataset_device = training_config["device"]

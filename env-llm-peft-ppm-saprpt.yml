@@ -1,0 +1,24 @@
+name: llm-peft-ppm-saprpt
+channels:
+  - conda-forge
+dependencies:
+  - python=3.12
+  - numpy=1.26
+  - pandas=2.2
+  - scikit-learn=1.5
+  - matplotlib
+  - seaborn
+  - ipykernel
+  - pip
+  - pip:
+      - peft==0.14.0
+      - torch>=2.7.0
+      - "transformers>=4.52.4"
+      - wandb==0.19.8
+      - pydantic==2.11.5
+      - torchmetrics==1.7.4
+      - datasets==4.0.0
+      - "skpm @ git+https://github.com/raseidi/skpm.git"
+      - tabpfn
+      - "tabpfn-extensions @ git+https://github.com/PriorLabs/tabpfn-extensions.git"
+      - "sap_rpt_oss @ git+https://github.com/SAP-samples/sap-rpt-1-oss.git"
