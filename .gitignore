@@ -14,15 +14,13 @@ lightning_logs/
 runs/
 
 # Data files (adjust as needed)
+notebook/llm-peft-ppm/data/
 external/
 logs/
 achieve/
 src/
 skpm/
-notebook/BPI_Challenge_2012C/
-notebook/BPIC20_DomesticDeclarations/
-notebook/HelpDesk/
-notebook/P2P/
+
 # *.csv
 # *.csv.gz
 *.parquet
