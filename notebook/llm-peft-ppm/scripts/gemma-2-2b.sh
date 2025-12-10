@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llm-peft-ppm_gemma-2-2b
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=10G
+#SBATCH --mem=30G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --gres=gpu:1
@@ -38,7 +38,7 @@ PARAMS_FILE="scripts/gemma-2-2b_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
 PROJECT="llm-peft-ppm_gemma-2-2b"
 
-SEEDS="41 42 43 44 45"
+SEEDS="43"
 
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
   for SEED in $SEEDS; do
