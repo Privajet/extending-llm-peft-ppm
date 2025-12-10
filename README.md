@@ -99,8 +99,8 @@ Check `scripts/*.sh` and `scripts/*.txt` to see how to reproduce jobs or run oth
 
 ## Results
 
-All metrics and analysis notebooks are in the `notebooks/` folder. Check [this notebook](notebooks/results.py) for plots.
+All metrics and analysis notebooks are in the `results/` folder. Check [this notebook](results/results.ipynb) for plots.
 
 ## Contact
 
-For questions or feedback, reach me at [rafael.oyamada@kuleuven.be](mailto:rafael.oyamada@kuleuven.be) or open an issue here.
+For questions or feedback, reach me at [rafael.oyamada@kuleuven.be](mailto:lennart.fertig@students.uni-mannheim.de) or open an issue here.
