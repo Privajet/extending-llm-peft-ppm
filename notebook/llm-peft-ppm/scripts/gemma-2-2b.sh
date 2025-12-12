@@ -38,7 +38,7 @@ PARAMS_FILE="scripts/gemma-2-2b_params.txt"
 PY_MAIN="fertig_lennart_next_event_prediction.py"
 PROJECT="llm-peft-ppm_gemma-2-2b"
 
-SEEDS="43"
+SEEDS="41 42 44 45"
 
 grep -vE '^\s*#|^\s*$' "$PARAMS_FILE" | while IFS= read -r ARGS; do
   for SEED in $SEEDS; do
