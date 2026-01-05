@@ -93,7 +93,7 @@ class NextEventPredictor(nn.Module):
                     num_layers=backbone_n_layers,
                     batch_first=True,
                 )
-            if backbone_name == "transformer":  # NEU
+            if backbone_name == "transformer":  # new baseline model
                 d_model = embedding_size
                 nhead = max(1, min(8, d_model // 16))
                 ff = max(4 * d_model, 2 * backbone_hidden_size)
