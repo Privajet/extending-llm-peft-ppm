@@ -103,6 +103,6 @@ All metrics and analysis notebooks are in the `results/` folder. Check [this not
 
 ## Contact
 
-For questions or feedback, reach me at [rafael.oyamada@kuleuven.be](mailto:lennart.fertig@students.uni-mannheim.de) or open an issue here.
+For questions or feedback, reach me at [lennart.fertig@students.uni-mannheim.de](mailto:lennart.fertig@students.uni-mannheim.de) or open an issue here.
 
 Orginal Link und GitHub hier rein packen. Paper Cite 
