@@ -1,0 +1,118 @@
+timestamp_utc: 2026-01-10T13:22:56.228459Z
+python: 3.13.5 | packaged by Anaconda, Inc. | (main, Jun 12 2025, 16:09:02) [GCC 11.2.0]
+
+== PLATFORM ==
+system: Linux
+release: 5.14.0-570.33.2.el9_6.x86_64
+version: #1 SMP PREEMPT_DYNAMIC Thu Aug 14 07:37:35 EDT 2025
+machine: x86_64
+processor: x86_64
+
+== OS ==
+NAME="AlmaLinux"
+VERSION="9.6 (Sage Margay)"
+ID="almalinux"
+ID_LIKE="rhel centos fedora"
+VERSION_ID="9.6"
+PLATFORM_ID="platform:el9"
+PRETTY_NAME="AlmaLinux 9.6 (Sage Margay)"
+ANSI_COLOR="0;34"
+LOGO="fedora-logo-icon"
+CPE_NAME="cpe:/o:almalinux:almalinux:9::baseos"
+HOME_URL="https://almalinux.org/"
+DOCUMENTATION_URL="https://wiki.almalinux.org/"
+BUG_REPORT_URL="https://bugs.almalinux.org/"
+
+ALMALINUX_MANTISBT_PROJECT="AlmaLinux-9"
+ALMALINUX_MANTISBT_PROJECT_VERSION="9.6"
+REDHAT_SUPPORT_PRODUCT="AlmaLinux"
+REDHAT_SUPPORT_PRODUCT_VERSION="9.6"
+SUPPORT_END=2032-06-01
+
+== KERNEL ==
+Linux dws-login-01.informatik.uni-mannheim.de 5.14.0-570.33.2.el9_6.x86_64 #1 SMP PREEMPT_DYNAMIC Thu Aug 14 07:37:35 EDT 2025 x86_64 x86_64 x86_64 GNU/Linux
+
+== HARDWARE ==
+-- lscpu --
+Architecture:                         x86_64
+CPU op-mode(s):                       32-bit, 64-bit
+Address sizes:                        46 bits physical, 48 bits virtual
+Byte Order:                           Little Endian
+CPU(s):                               32
+On-line CPU(s) list:                  0-31
+Vendor ID:                            GenuineIntel
+Model name:                           Intel(R) Xeon(R) CPU E5-2640 v2 @ 2.00GHz
+CPU family:                           6
+Model:                                62
+Thread(s) per core:                   2
+Core(s) per socket:                   8
+Socket(s):                            2
+Stepping:                             4
+CPU(s) scaling MHz:                   90%
+CPU max MHz:                          2500.0000
+CPU min MHz:                          1200.0000
+BogoMIPS:                             4000.18
+Flags:                                fpu vme de pse tsc msr pae mce cx8 apic sep mtrr pge mca cmov pat pse36 clflush dts acpi mmx fxsr sse sse2 ss ht tm pbe syscall nx pdpe1gb rdtscp lm constant_tsc arch_perfmon pebs bts rep_good nopl xtopology nonstop_tsc cpuid aperfmperf pni pclmulqdq dtes64 monitor ds_cpl vmx smx est tm2 ssse3 cx16 xtpr pdcm pcid dca sse4_1 sse4_2 x2apic popcnt tsc_deadline_timer aes xsave avx f16c rdrand lahf_lm cpuid_fault pti ssbd ibrs ibpb stibp tpr_shadow flexpriority ept vpid fsgsbase smep erms xsaveopt dtherm ida arat pln pts vnmi md_clear flush_l1d
+Virtualization:                       VT-x
+L1d cache:                            512 KiB (16 instances)
+L1i cache:                            512 KiB (16 instances)
+L2 cache:                             4 MiB (16 instances)
+L3 cache:                             40 MiB (2 instances)
+NUMA node(s):                         2
+NUMA node0 CPU(s):                    0,2,4,6,8,10,12,14,16,18,20,22,24,26,28,30
+NUMA node1 CPU(s):                    1,3,5,7,9,11,13,15,17,19,21,23,25,27,29,31
+Vulnerability Gather data sampling:   Not affected
+Vulnerability Itlb multihit:          KVM: Mitigation: Split huge pages
+Vulnerability L1tf:                   Mitigation; PTE Inversion; VMX conditional cache flushes, SMT vulnerable
+Vulnerability Mds:                    Mitigation; Clear CPU buffers; SMT vulnerable
+Vulnerability Meltdown:               Mitigation; PTI
+Vulnerability Mmio stale data:        Unknown: No mitigations
+Vulnerability Reg file data sampling: Not affected
+Vulnerability Retbleed:               Not affected
+Vulnerability Spec rstack overflow:   Not affected
+Vulnerability Spec store bypass:      Mitigation; Speculative Store Bypass disabled via prctl
+Vulnerability Spectre v1:             Mitigation; usercopy/swapgs barriers and __user pointer sanitization
+Vulnerability Spectre v2:             Mitigation; Retpolines; IBPB conditional; IBRS_FW; STIBP conditional; RSB filling; PBRSB-eIBRS Not affected; BHI Not affected
+Vulnerability Srbds:                  Not affected
+Vulnerability Tsx async abort:        Not affected
+
+-- free -h --
+total        used        free      shared  buff/cache   available
+Mem:           188Gi        46Gi       121Gi       2.5Gi        24Gi       142Gi
+Swap:           27Gi       1.2Gi        26Gi
+
+-- nvidia-smi --
+<unavailable: Command 'nvidia-smi' returned non-zero exit status 127.>
+
+-- nvidia-smi (query) --
+<unavailable: Command 'nvidia-smi --query-gpu=name,memory.total,driver_version --format=csv' returned non-zero exit status 127.>
+
+== PACKAGES ==
+numpy: 2.2.6
+pandas: 2.3.3
+scikit-learn: 1.7.2
+matplotlib: 3.10.7
+seaborn: 0.13.2
+torch: 2.9.0
+transformers: 4.57.2
+peft: <not available: No module named 'peft'>
+torchmetrics: <not available: No module named 'torchmetrics'>
+datasets: <not available: No module named 'datasets'>
+skpm: <not available: No module named 'skpm'>
+tabpfn: <not available: No module named 'tabpfn'>
+tabpfn-extensions: <not available: No module named 'tabpfn-extensions'>
+sap_rpt_oss: 1.0.1
+wandb: <not available: No module named 'wandb'>
+pydantic: 2.12.5
+
+== TORCH DETAILS ==
+{'cuda_available': False, 'cuda_version': '12.8', 'cudnn_version': 91002, 'device_count': 0, 'bf16_supported': False}
+
+== WANDB ENV ==
+{}
+
+== RELEVANT ENV VARS ==
+{}
+
+== MIXED PRECISION NOTE ==
+This report captures environment capabilities only. Whether mixed precision (autocast/FP16/BF16) is used must be confirmed from the training configuration/code.
