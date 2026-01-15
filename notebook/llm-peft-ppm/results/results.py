@@ -2005,7 +2005,7 @@ for log_name, df_log in pareto_source.groupby("log"):
         )
 
     ax.set_xscale("log")
-    ax.set_xlabel("Trainable parameters (LoRA, log scale)")
+    ax.set_xlabel("Model size (LoRA, log scale)")
     ax.set_ylabel("MT-Score (mean across seeds)")
     ax.grid(True, which="both", linestyle="--", linewidth=0.5)
 
@@ -2167,7 +2167,7 @@ else:
             )
 
         ax.set_xscale("log")
-        ax.set_xlabel("Trainable parameters (LoRA, log scale)")
+        ax.set_xlabel("Model size (LoRA, log scale)")
         ax.set_ylabel("MT-Score (mean across seeds)")
 
         ds_label = DATASET_MAP.get(log_name, log_name)
