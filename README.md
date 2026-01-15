@@ -8,12 +8,39 @@
 
 ## Requirements
 
-Install all dependencies with:
+Install all dependencies provided in requirements.txt:
 
 ```bash
-uv venv .venvv -python 3.12
-source .venv/bin/activate
-uv pip install -r requirements.txt
+# Base Python version
+python==3.12
+
+# Core deps
+numpy==1.26
+pandas==2.2
+scikit-learn==1.5
+matplotlib
+seaborn
+ipykernel
+
+# LLM / Deep learning stack
+peft==0.14.0
+
+# Torch
+torch>=2.7.0
+
+# Transformers
+transformers>=4.52.4
+
+wandb==0.19.8
+pydantic==2.11.5
+torchmetrics==1.7.4
+datasets==4.0.0
+
+# Git-based dependencies
+skpm @ git+https://github.com/raseidi/skpm.git
+tabpfn
+tabpfn-extensions @ git+https://github.com/PriorLabs/tabpfn-extensions.git
+sap_rpt_oss @ git+https://github.com/SAP-samples/sap-rpt-1-oss.git
 ```
 
 ## Scripts and Structure
@@ -44,12 +71,10 @@ We use five public event logs. They will be downloaded via [SkPM](https://skpm.r
 
 ## Usage
 
-### Single experiments
-
 **RNN baseline**
 
 ```bash
-python next_event_prediction.py \
+python fertig_lennart_next_event_prediction.py \
   --dataset BPI20PrepaidTravelCosts \
   --backbone rnn \
   --embedding_size 32 \
@@ -69,12 +94,12 @@ In order to use LLMs, you need a [HuggingFace token](https://huggingface.co/docs
 
 * Create an `.env` file in the root of this repository and write your token like `HF_TOKEN=<YOUR_TOKEN>`
 * Export a local variable `export HF_TOKEN="<YOUR_TOKEN>"`
-* Hard code it [here](https://github.com/raseidi/llm-peft-ppm/blob/ceb46b533d2d3154315ef008e4c6df9ddc988e14/ppm/models/models.py#L13)
+* Hard code it [here](notebook/llm-peft-ppm/ppm/models/models.py) under "HF_TOKEN = os.getenv("HF_TOKEN")"
 
 For local debugging purposes, try the tiny setup below with a small `r` value for `BPI20PrepaidTravelCosts` and `qwen25-05b`. If it doesn't fit your GPU memory, keep decreasing the `batch_size` (=4 uses less than 2gb). 
 
 ```bash
-python next_event_prediction.py \
+python fertig_lennart_next_event_prediction.py \
   --dataset BPI20PrepaidTravelCosts \
   --backbone qwen25-05b \
   --embedding_size 896 \
