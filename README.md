@@ -1,55 +1,115 @@
-# Fine-Tuning LLMs for Multi-Task Predictive Process Monitoring
+````markdown
+# Extending Multi-Task Predictive Process Monitoring with Decoder-Only LLMs
 
 ## Overview
 
-* This repo has code and scripts to fine-tune large language models (LLMs) for multi-task PPM.
-* We use [uv](https://docs.astral.sh/uv/guides/install-python/) to manage our local environment.
-* Tested only on Ubuntu 24.04 using Python 3.12.
+This repository contains code and scripts to fine-tune decoder-only large language models (LLMs) for multi-task predictive process monitoring (PPM) and to compare them against sequence baselines and tabular foundation models.
 
-## Requirements
+This thesis project is based on the original implementation by Oyamada et al. and extends it with an additional temporal prediction task, additional backbones, and additional baselines.
 
-Install all dependencies with:
+## Origin and Attribution
+
+This project builds on the original repository and approach:
+
+- Original GitHub repository: https://github.com/raseidi/llm-peft-ppm
+- Original paper (arXiv): https://doi.org/10.48550/arXiv.2509.03161
+
+### Thesis extensions (relative to the original work)
+
+Compared to the original implementation, this thesis project:
+
+1. Extends the multi-task setting by adding next event time alongside next activity and remaining tim, resulting in three prediction heads.
+2. Evaluates additional decoder-only LLM backbones under the same interface, including zero-shot and few-shot adaptation settings.
+3. Includes tabular foundation models as additional baselines.
+
+## System and Tooling
+
+- Tested on **Ubuntu 24.04**
+- Python **3.12**
+- Local environment management via **uv**: https://docs.astral.sh/uv/guides/install-python/
+
+## Installation
+
+You can set up the project using either `requirements.txt` (pip/uv) or the provided conda environment files.
+
+### Option A: `requirements.txt` (pip/uv)
+
+Create and activate a virtual environment (example with `uv`):
 
 ```bash
-uv venv .venvv -python 3.12
+uv venv
 source .venv/bin/activate
+```
+
+Install dependencies:
+
+```bash
 uv pip install -r requirements.txt
 ```
 
-## Scripts and Structure
+### Option B: Conda environments (recommended for reproducibility)
 
+This repository provides two conda environment files:
+
+- `env-llm-peft-ppm.yml`
+- `env-llm-peft-ppm-saprpt.yml`
+
+Create and activate one of them:
+
+```bash
+conda env create -f env-llm-peft-ppm.yml
+conda activate env-llm-peft-ppm
 ```
+
+or
+
+```bash
+conda env create -f env-llm-peft-ppm-saprpt.yml
+conda activate env-llm-peft-ppm-saprpt
+```
+
+Notes:
+
+- Use the conda environment files for thesis-grade reproducibility.
+- Use `requirements.txt` for lightweight/local debugging setups.
+
+## Repository Structure
+
+```text
 .
 ├── data/                                       # Event logs (automatically downloaded)
 ├── scripts/                                    # Experiment scripts and configs
-│   ├── *.sh                        
-│   └── *.txt                                         
+│   ├── *.sh
+│   └── *.txt
 ├── notebooks/                                  # Analysis notebooks
 ├── ppm/                                        # Source code
 ├── fertig_lennart_next_event_prediction.py     # Main training script
-├── next_event_prediction.py                    # Original training script
-├── requirements.txt                            # Python dependencies
+├── requirements.txt                            # Python dependencies (pip/uv)
+├── env-llm-peft-ppm.yml                        # Conda environment (reproducibility)
+├── env-llm-peft-ppm-saprpt.yml                 # Conda environment variant (reproducibility)
 └── README.md                                   # This file
 ```
 
 ## Data
 
-We use five public event logs. They will be downloaded via [SkPM](https://skpm.readthedocs.io/en/latest/examples/01_data_api.html) under `data/<LOG>/`:
+Five public event logs are used. They are downloaded via `skpm` into `data/<LOG>/`:
 
-* [BPI20PTC](https://doi.org/10.4121/uuid:5d2fe5e1-f91f-4a3b-ad9b-9e4126870165) (Prepaid Travel Costs)
-* [BPI20RfP](https://doi.org/10.4121/uuid:895b26fb-6f25-46eb-9e48-0dca26fcd030) (Request for Payment)
-* [BPI20TPD](https://doi.org/10.4121/uuid:ea03d361-a7cd-4f5e-83d8-5fbdf0362550) (Permit Data)
-* [BPI12](https://doi.org/10.4121/uuid:3926db30-f712-4394-aebc-75976070e91f)
-* [BPI17](https://doi.org/10.4121/uuid:c2c3b154-ab26-4b31-a0e8-8f2350ddac11)
+SkPM documentation: https://skpm.readthedocs.io/en/latest/examples/01_data_api.html
+
+Event logs:
+
+- BPI20PTC (Prepaid Travel Costs): https://doi.org/10.4121/uuid:5d2fe5e1-f91f-4a3b-ad9b-9e4126870165
+- BPI20RfP (Request for Payment): https://doi.org/10.4121/uuid:895b26fb-6f25-46eb-9e48-0dca26fcd030
+- BPI20TPD (Permit Data): https://doi.org/10.4121/uuid:ea03d361-a7cd-4f5e-83d8-5fbdf0362550
+- BPI12: https://doi.org/10.4121/uuid:3926db30-f712-4394-aebc-75976070e91f
+- BPI17: https://doi.org/10.4121/uuid:c2c3b154-ab26-4b31-a0e8-8f2350ddac11
 
 ## Usage
 
-### Single experiments
-
-**RNN baseline**
+### RNN baseline
 
 ```bash
-python next_event_prediction.py \
+python fertig_lennart_next_event_prediction.py \
   --dataset BPI20PrepaidTravelCosts \
   --backbone rnn \
   --embedding_size 32 \
@@ -60,21 +120,37 @@ python next_event_prediction.py \
   --categorical_features activity \
   --continuous_features all \
   --categorical_targets activity \
-  --continuous_targets remaining_time
+  --continuous_targets remaining_time next_event_time
 ```
 
-**LLM fine-tuning**
+### LLM fine-tuning (LoRA)
 
-In order to use LLMs, you need a [HuggingFace token](https://huggingface.co/docs/hub/en/security-tokens). A few options on how to use it:
+To use Hugging Face-hosted model weights, a Hugging Face token is required:
 
-* Create an `.env` file in the root of this repository and write your token like `HF_TOKEN=<YOUR_TOKEN>`
-* Export a local variable `export HF_TOKEN="<YOUR_TOKEN>"`
-* Hard code it [here](https://github.com/raseidi/llm-peft-ppm/blob/ceb46b533d2d3154315ef008e4c6df9ddc988e14/ppm/models/models.py#L13)
+Hugging Face tokens: https://huggingface.co/docs/hub/en/security-tokens
 
-For local debugging purposes, try the tiny setup below with a small `r` value for `BPI20PrepaidTravelCosts` and `qwen25-05b`. If it doesn't fit your GPU memory, keep decreasing the `batch_size` (=4 uses less than 2gb). 
+Supported ways to provide it:
+
+1. Create an `.env` file in the repository root:
+
+```text
+HF_TOKEN=<YOUR_TOKEN>
+```
+
+2. Export an environment variable:
 
 ```bash
-python next_event_prediction.py \
+export HF_TOKEN="<YOUR_TOKEN>"
+```
+
+3. Use environment-variable access in code (recommended pattern already used in the project):
+
+`HF_TOKEN = os.getenv("HF_TOKEN")` (see `ppm/models/models.py`)
+
+Minimal local debugging configuration (reduce `batch_size` if GPU memory is limited):
+
+```bash
+python fertig_lennart_next_event_prediction.py \
   --dataset BPI20PrepaidTravelCosts \
   --backbone qwen25-05b \
   --embedding_size 896 \
@@ -85,24 +161,45 @@ python next_event_prediction.py \
   --categorical_features activity \
   --continuous_features all \
   --categorical_targets activity \
-  --continuous_targets remaining_time \
+  --continuous_targets remaining_time next_event_time \
   --fine_tuning lora \
   --r 2 \
   --lora_alpha 4
 ```
 
-Alternatively, use the argument `--wandb` to enable wandb.
+Weights & Biases logging can be enabled with `--wandb`.
 
-### Hyperparameter search
+## Hyperparameter Search and Reproducibility
 
-Check `scripts/*.sh` and `scripts/*.txt` to see how to reproduce jobs or run other configurations locally.
+Experiment scripts and configuration grids are located in:
+
+- `scripts/*.sh`
+- `scripts/*.txt`
+
+They document how runs were executed and can be used to reproduce experiments locally or on compute infrastructure.
 
 ## Results
 
-All metrics and analysis notebooks are in the `results/` folder. Check [this notebook](results/results.ipynb) for plots.
+Metrics, exports, and analysis notebooks are stored under:
+
+- `results/`
+
+Plots and analysis are available in:
+
+- `results/results.ipynb`
+
+## Citation
+
+If you use or build upon this repository, cite the original work:
+
+- Original GitHub: https://github.com/raseidi/llm-peft-ppm
+- Original paper: https://doi.org/10.48550/arXiv.2509.03161
 
 ## Contact
 
-For questions or feedback, reach me at [rafael.oyamada@kuleuven.be](mailto:lennart.fertig@students.uni-mannheim.de) or open an issue here.
+For questions or feedback:
 
-Orginal Link und GitHub hier rein packen. Paper Cite 
+- lennart.fertig@students.uni-mannheim.de
+
+or open an issue in this repository.
+````

@@ -1,7 +1,7 @@
 #!/bin/bash
 #SBATCH --job-name=llm-peft-ppm_transformer_baseline
 #SBATCH --cpus-per-task=10
-#SBATCH --mem=64G
+#SBATCH --mem=48G
 #SBATCH --mail-user=lennart.fertig@students.uni-mannheim.de
 #SBATCH --mail-type=BEGIN,END,FAIL
 #SBATCH --gres=gpu:1
