@@ -36,6 +36,13 @@ os.makedirs(output_dir_csv, exist_ok=True)
 os.makedirs(output_dir_plots, exist_ok=True)
 
 # %%
+def save_png_and_pdf(fig, out_path_png: str, dpi: int = 300):
+    # expects out_path_png like ".../name.png"
+    fig.savefig(out_path_png, dpi=dpi)
+    out_path_pdf = os.path.splitext(out_path_png)[0] + ".pdf"
+    fig.savefig(out_path_pdf)  # vector PDF
+
+# %%
 # Display all lines pandas
 pd.set_option("display.max_rows", None)
 
@@ -73,39 +80,6 @@ colors = [
 ]
 
 plt.rcParams["axes.prop_cycle"] = plt.cycler(color=colors)  
-
-# %%
-properties = pd.read_csv(
-    "/ceph/lfertig/Thesis/notebook/llm-peft-ppm/results/csv/log_properties.csv"
-)
-properties
-
-# %%
-# from ppm.models import NextEventPredictor
-# import torch 
-
-# use_cuda = torch.cuda.is_available()
-# device = "cuda" if use_cuda else "cpu"
-# print("Using device:", device)
-
-# rnn_example = NextEventPredictor(
-#     embedding_size=32,
-#     categorical_cols=["activity"],
-#     numerical_cols=["accumulated_time"],
-#     categorical_sizes={"activity": 20},
-#     categorical_targets=["activity"],
-#     numerical_targets=["remaining_time"],
-#     backbone_name="rnn",
-#     backbone_hidden_size=64,
-#     backbone_n_layers=2,
-#     padding_idx=0,
-#     strategy="sum",
-#     backbone_pretrained=False,
-#     backbone_finetuning=None,
-#     backbone_type="lstm",
-#     device=device,
-# )
-# pprint(rnn_example)
 
 # %%
 def _to_int_or_none(x):
@@ -1074,8 +1048,9 @@ for log_name, df_log in llm.groupby("log"):
             log_dir,
             f"llm_backbones_boxplot_{log_name}_{setting}.png"
         )
-        plt.savefig(out_path, dpi=300)
+        save_png_and_pdf(fig, out_path, dpi=300)
         plt.close(fig)
+
 
         print(f"Saved LLM-backbone comparison for log={log_name}, setting={setting} to: {out_path}")
 
@@ -1438,7 +1413,7 @@ for setting in KEEP_SETTINGS:
     plt.tight_layout(rect=(0, 0, 1, 0.96))
 
     out_path = os.path.join(out_dir, f"llm_backbones_boxplot_ALL_{setting}_from_csv.png")
-    plt.savefig(out_path, dpi=300)
+    save_png_and_pdf(fig, out_path, dpi=300)
     plt.close(fig)
 
     print(f"Saved pooled boxplot (from CSV table) for setting={setting} to: {out_path}")
@@ -1558,8 +1533,9 @@ for log_name, df_log in llm.groupby("log"):
         plt.tight_layout()
 
         out_path = os.path.join(log_dir, f"llm_methods_boxplot_selected_{log_name}_{backbone}.png")
-        plt.savefig(out_path, dpi=300)
+        save_png_and_pdf(fig, out_path, dpi=300)
         plt.close(fig)
+
 
         print(f"Saved selected-methods boxplot for log={log_name}, backbone={backbone} to: {out_path}")
 
@@ -1629,7 +1605,7 @@ for log_name, df_log in llm_freezing.groupby("log"):
             log_dir,
             f"llm_methods_boxplot_freezing_{log_name}_{backbone}.png"
         )
-        plt.savefig(out_path, dpi=300)
+        save_png_and_pdf(fig, out_path, dpi=300)
         plt.close(fig)
 
         print(f"Saved Freezing-only boxplot for log={log_name}, backbone={backbone} to: {out_path}")
@@ -1842,7 +1818,7 @@ if legend_handles is not None:
 plt.tight_layout(rect=(0, 0.05, 1, 1))  # unten Platz für Legende lassen
 
 plot_path = os.path.join(output_dir_plots, "loss_curves_multitask_lora_best.png")
-plt.savefig(plot_path, dpi=300)
+save_png_and_pdf(fig, out_path, dpi=300)
 plt.close(fig)
 
 print("Saved LoRA loss curve plot to:", plot_path)
@@ -2035,7 +2011,7 @@ for log_name, df_log in pareto_source.groupby("log"):
     os.makedirs(log_dir, exist_ok=True)
     out_path = os.path.join(log_dir, f"pareto_llm_lora_{log_name}.png")
 
-    plt.savefig(out_path, dpi=300)
+    save_png_and_pdf(fig, out_path, dpi=300)
     plt.close(fig)
 
     print(f"Saved Pareto plot for log={log_name} to: {out_path}")
@@ -2193,8 +2169,9 @@ else:
         os.makedirs(log_dir, exist_ok=True)
         out_path = os.path.join(log_dir, f"pareto_llm_lora_sweeps_true_{log_name}.png")
 
-        plt.savefig(out_path, dpi=300)
+        save_png_and_pdf(fig, out_path, dpi=300)
         plt.close(fig)
+
 
         print(f"Saved TRUE Pareto-front LoRA-sweeps plot for log={log_name} to: {out_path}")
 
