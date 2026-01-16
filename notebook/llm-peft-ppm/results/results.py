@@ -1818,7 +1818,7 @@ if legend_handles is not None:
 plt.tight_layout(rect=(0, 0.05, 1, 1))  # unten Platz für Legende lassen
 
 plot_path = os.path.join(output_dir_plots, "loss_curves_multitask_lora_best.png")
-save_png_and_pdf(fig, out_path, dpi=300)
+save_png_and_pdf(fig, plot_path, dpi=300)
 plt.close(fig)
 
 print("Saved LoRA loss curve plot to:", plot_path)
