@@ -1,4 +1,3 @@
-````markdown
 # Extending Multi-Task Predictive Process Monitoring with Decoder-Only LLMs
 
 ## Overview
@@ -202,4 +201,3 @@ For questions or feedback:
 - lennart.fertig@students.uni-mannheim.de
 
 or open an issue in this repository.
-````
