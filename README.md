@@ -196,8 +196,4 @@ If you use or build upon this repository, cite the original work:
 
 ## Contact
 
-For questions or feedback:
-
-- lennart.fertig@students.uni-mannheim.de
-
-or open an issue in this repository.
+For questions or feedback or open an issue in this repository.
